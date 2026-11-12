@@ -224,7 +224,6 @@ test('permissões: recepção não finaliza (403) e só inicia dizendo o veterin
   assert.equal(ini.dados.status, 'em_atendimento');
   assert.equal(ini.dados.veterinario.nome, 'Dra. Teste');
   assert.ok(ini.dados.iniciado_em);
-  assert.equal((await chamar(env, 'POST', `/api/atendimentos/${a.id}/finalizar`, { cookie: recepcao })).status, 403);
   const fim = await chamar(env, 'POST', `/api/atendimentos/${a.id}/finalizar`, { cookie: vet2 });
   assert.equal(fim.status, 200);
   assert.equal(fim.dados.status, 'finalizado');
@@ -545,4 +544,20 @@ test('push: rotas exigem login e só aceitam endereços oficiais', async () => {
   assert.equal((await chamar(env, 'POST', '/api/push/cancelar', { cookie: vet, corpo: { endpoint: 'https://web.push.apple.com/aparelho1' } })).status, 200);
   assert.equal((await chamar(env, 'GET', '/api/push/estado', { cookie: vet })).dados.aparelhos, 0);
   assert.equal(acoes(env, 'ativar_notificacoes').length, 2);
+});
+
+
+test('recepção também pode finalizar o atendimento (e fica registrado quem finalizou)', async () => {
+  const { env, recepcao, vet } = await ambiente();
+  const pet = await novoPet(env, recepcao, 'Bidu', 'Rita', '71 99999-0101');
+  const a = (await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(pet) })).dados;
+  // aguardando ainda não pode ser finalizado
+  assert.equal((await chamar(env, 'POST', `/api/atendimentos/${a.id}/finalizar`, { cookie: recepcao })).status, 409);
+  assert.equal((await chamar(env, 'POST', `/api/atendimentos/${a.id}/iniciar`, { cookie: vet })).status, 200);
+  const fim = await chamar(env, 'POST', `/api/atendimentos/${a.id}/finalizar`, { cookie: recepcao });
+  assert.equal(fim.status, 200);
+  assert.equal(fim.dados.status, 'finalizado');
+  const log = acoes(env, 'finalizar_atendimento').at(-1);
+  const quem = env.DB.bruto.prepare('SELECT papel FROM usuarios WHERE id = ?').get(log.usuario_id);
+  assert.equal(quem.papel, 'recepcao');
 });

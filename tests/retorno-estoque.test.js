@@ -367,8 +367,8 @@ test('estoque: permissões — recepção cria entrada; finalizar continua só d
   assert.equal((await entrada(a, p.id, { quantidade: 5, validade: dataEm(a, 90) }, a.recepcao)).status, 201);
   assert.equal((await chamar(a.env, 'POST', `/api/estoque/${p.id}/ajustes`, { cookie: a.recepcao, corpo: { delta: -1, motivo: 'Uso interno' } })).status, 200);
   const at = await atendimentoEmAndamento(a, await novoPet(a, 'Ana'));
-  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at}/finalizar`, { cookie: a.recepcao })).status, 403);
-  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at}/finalizar`, { cookie: a.filipe })).status, 200);
+  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at}/finalizar`, { cookie: a.recepcao })).status, 200); // recepção pode finalizar
+  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at}/finalizar`, { cookie: a.filipe })).status, 409);
   // Detalhe: lotes e histórico com quem fez.
   const d = await estoqueDe(a, p.id);
   assert.equal(d.lotes.length, 1);

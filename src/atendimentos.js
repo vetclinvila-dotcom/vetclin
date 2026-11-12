@@ -359,8 +359,10 @@ async function atendimentosIniciar(request, env, id) {
   return resposta;
 }
 
+// Finalizar: veterinário, suporte e também a recepção (quando o doutor esquece de marcar).
+// Quem finalizou fica no registro de ações.
 const atendimentosFinalizar = (request, env, id) => mudarStatus(request, env, id, {
-  papeis: PAPEIS_CLINICOS, de: 'em_atendimento', para: 'finalizado', acao: 'finalizar_atendimento',
+  papeis: [...PAPEIS_CLINICOS, 'recepcao'], de: 'em_atendimento', para: 'finalizado', acao: 'finalizar_atendimento',
   mensagemErro: 'Só é possível finalizar um atendimento que está em andamento.',
   camposExtras: () => ({ sql: ', finalizado_em = ?', args: [agoraISO()], depois: {} }),
 });

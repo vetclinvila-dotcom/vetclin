@@ -828,6 +828,16 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
     });
     botoes.push(b);
   }
+  // Recepção também pode finalizar (quando o doutor esquece de marcar).
+  if (a.status === 'em_atendimento' && usuario.papel === 'recepcao') {
+    const b = el('button', { type: 'button', class: 'finalizar' }, 'Finalizar atendimento');
+    b.addEventListener('click', async () => {
+      if (await confirmar(`Finalizar o atendimento de ${p.nome}?`, 'Use quando o paciente já saiu do consultório. Fica registrado que a recepção finalizou.', 'Sim, finalizar')) {
+        rodar(b, () => api('POST', `/api/atendimentos/${a.id}/finalizar`))();
+      }
+    });
+    botoes.push(b);
+  }
   if ((a.status === 'em_atendimento' || a.status === 'finalizado') && PODE_ATENDER.includes(usuario.papel)) {
     const b = el('button', { type: 'button', class: 'secundario receita-botao' }, 'Receita');
     b.addEventListener('click', async () => { b.disabled = true; try { await abrirNovaReceita({ atendimento_id: a.id }); } catch (e) { b.disabled = false; aoErro(e); } });

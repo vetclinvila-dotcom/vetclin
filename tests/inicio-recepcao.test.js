@@ -94,8 +94,8 @@ test('veterinário inicia sem informar (ele mesmo, não marcado pela recepção,
   assert.equal(r.dados.iniciado_por, a.ids.filipe);
   assert.equal(r.dados.iniciado_pela_recepcao, false);
   assert.equal(a.avisos.filter((x) => x.titulo === 'Paciente no consultório').length, 0);
-  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at.id}/finalizar`, { cookie: a.recepcao })).status, 403);
-  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at.id}/finalizar`, { cookie: a.filipe })).status, 200);
+  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at.id}/finalizar`, { cookie: a.recepcao })).status, 200); // recepção pode finalizar
+  assert.equal((await chamar(a.env, 'POST', `/api/atendimentos/${at.id}/finalizar`, { cookie: a.filipe })).status, 409); // já finalizado
 });
 
 test('veterinário pode indicar outro veterinário; já iniciado dá 409', async () => {
