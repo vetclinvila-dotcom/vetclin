@@ -1026,9 +1026,9 @@ async function telaChegadaNova(petPre = null) {
   const botao = el('button', { type: 'submit', id: 'enviar-chegada', class: 'grande' }, 'Registrar chegada');
   const entradaPet = el('input', { id: 'pet_nome', name: 'pet_nome', autocomplete: 'off', required: true });
   const entradaTutor = el('input', { id: 'tutor_nome', name: 'tutor_nome', autocomplete: 'off', required: true });
-  const entradaFone = el('input', { id: 'whatsapp', name: 'whatsapp', type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off', required: true });
+  const entradaFone = el('input', { id: 'whatsapp', name: 'whatsapp', type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off' });
   const blocoNomes = el('div', {}, el('label', { for: 'pet_nome' }, 'Nome do pet'), entradaPet, el('label', { for: 'tutor_nome' }, 'Nome do tutor'), entradaTutor, sugestoes);
-  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor'), entradaFone);
+  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor (opcional)'), entradaFone);
   const cabecaEscolhido = el('div', { class: 'cartao cabeca-chegada', id: 'pet-escolhido' });
   const blocoPeso = el('div', { class: 'bloco-chegada' }, ...campos.peso);
 
@@ -1143,7 +1143,7 @@ function cartaoDuplicado(dados, extra, reenviar, aoVoltar = null, usarPet = null
     el('h2', {}, 'É a mesma pessoa?'),
     el('p', {}, 'Já existe cadastro com este WhatsApp.'),
     ...dados.duplicados.map((t) => el('div', { class: 'cartao' },
-      el('strong', {}, t.nome), el('span', { class: 'suave' }, ` · final ${t.final_telefone} · ${t.codigo}`),
+      el('strong', {}, t.nome), el('span', { class: 'suave' }, `${t.final_telefone ? ' · final ' + t.final_telefone : ''} · ${t.codigo}`),
       el('p', { class: 'suave' }, t.pets.length ? 'Pets: ' + t.pets.map((p) => `${p.nome} (${ROTULO_ESPECIE[p.especie] || p.especie})`).join(', ') : 'Nenhum pet cadastrado.'),
       el('button', { type: 'button', onclick: () => reenviar({ tutor_existente_id: t.id }) }, 'Sim, é esta pessoa — adicionar o pet aqui'))),
     el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ confirmar_duplicado: true }) }, 'Não, é outra pessoa da família — criar novo cadastro'),
@@ -1369,7 +1369,7 @@ async function telaEditarTutor(id) {
   const botao = el('button', { type: 'submit' }, 'Salvar');
   const f = el('form', { novalidate: true },
     ...campo('Nome do tutor', 'nome', { required: true, value: t.nome }),
-    ...campo('WhatsApp', 'whatsapp', { type: 'tel', inputmode: 'tel', value: formatarTelefone(t.whatsapp), placeholder: '(71) 99999-8888' }),
+    ...campo('WhatsApp (opcional)', 'whatsapp', { type: 'tel', inputmode: 'tel', value: formatarTelefone(t.whatsapp), placeholder: '(71) 99999-8888' }),
     ...campoTexto('Observações', 'observacoes', t.observacoes || ''),
     area, botao);
   async function salvar(extra = {}) {
@@ -1383,7 +1383,7 @@ async function telaEditarTutor(id) {
       if (e.status === 409 && e.dados && e.dados.duplicados) {
         area.replaceChildren(el('div', { class: 'cartao aviso' },
           el('h2', {}, 'Já existe cadastro com este WhatsApp'),
-          ...e.dados.duplicados.map((x) => el('p', {}, `${x.nome} · final ${x.final_telefone} · ${x.codigo}`)),
+          ...e.dados.duplicados.map((x) => el('p', {}, `${x.nome}${x.final_telefone ? ' · final ' + x.final_telefone : ''} · ${x.codigo}`)),
           el('button', { type: 'button', class: 'secundario', onclick: () => salvar({ confirmar_duplicado: true }) }, 'Salvar mesmo assim')));
       } else area.replaceChildren(caixaMensagem('erro', e.message));
     }

@@ -38,6 +38,13 @@ export function normalizarWhatsapp(entrada) {
   return { e164: '+' + d, digitos: d };
 }
 
+// Telefone OPCIONAL: vazio vira { e164: null, digitos: null } (tutor sem telefone).
+// Se vier preenchido, precisa ser válido.
+export function telefoneOpcional(entrada) {
+  if (String(entrada ?? '').replace(/\D/g, '') === '') return { e164: null, digitos: null };
+  return normalizarWhatsapp(entrada);
+}
+
 // (finalTelefone agora mora em util.js; continua disponível por aqui.)
 export { finalTelefone };
 
@@ -279,7 +286,7 @@ function comandoInserirPet(env, { codigo, tutorId, tutorCodigo, d, origem, usuar
 function lerTutor(c) {
   return {
     nome: texto(c.nome, 'nome do tutor', { max: 120 }),
-    tel: normalizarWhatsapp(c.whatsapp),
+    tel: telefoneOpcional(c.whatsapp),
     observacoes: texto(c.observacoes, 'observações', { obrigatorio: false, max: 1000 }) || null,
   };
 }
@@ -309,7 +316,7 @@ async function tutoresCriar(request, env) {
   const u = await exigirLogin(request, env);
   const c = await lerJson(request);
   const t = lerTutor(c);
-  if (c.confirmar_duplicado !== true) {
+  if (c.confirmar_duplicado !== true && t.tel.digitos) {
     const dup = await tutoresComMesmoWhatsapp(env, t.tel.digitos);
     if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
   }
@@ -337,8 +344,8 @@ async function tutoresAlterar(request, env, id) {
   if (c.nome !== undefined) novo.nome = texto(c.nome, 'nome do tutor', { max: 120 });
   if (c.observacoes !== undefined) novo.observacoes = texto(c.observacoes, 'observações', { obrigatorio: false, max: 1000 }) || null;
   if (c.whatsapp !== undefined) {
-    const tel = normalizarWhatsapp(c.whatsapp);
-    if (tel.digitos !== antes.whatsapp_digitos && c.confirmar_duplicado !== true) {
+    const tel = telefoneOpcional(c.whatsapp);
+    if (tel.digitos && tel.digitos !== antes.whatsapp_digitos && c.confirmar_duplicado !== true) {
       const dup = await tutoresComMesmoWhatsapp(env, tel.digitos, id);
       if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
     }
@@ -490,7 +497,7 @@ async function cadastroRapido(request, env) {
 
   // Caso 2: tutor novo.
   const t = lerTutor({ nome: c.tutor?.nome, whatsapp: c.tutor?.whatsapp });
-  if (c.confirmar_duplicado !== true) {
+  if (c.confirmar_duplicado !== true && t.tel.digitos) {
     const dup = await tutoresComMesmoWhatsapp(env, t.tel.digitos);
     if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
   }

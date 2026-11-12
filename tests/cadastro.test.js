@@ -398,3 +398,31 @@ test('todas as rotas do cadastro exigem login', async () => {
     assert.equal(r.status, 401, `${m} ${c}`);
   }
 });
+
+// ---------- telefone do tutor é opcional ----------
+test('tutor sem telefone: cadastro, cadastro rápido com chegada, edição e busca funcionam', async () => {
+  const a = await ambiente();
+  // tutor sem telefone
+  const t = await chamar(a.env, 'POST', '/api/tutores', { cookie: a.recepcao, corpo: { nome: 'Sem Fone' } });
+  assert.equal(t.status, 201);
+  assert.equal(t.dados.whatsapp ?? null, null);
+  // dois tutores sem telefone não são "duplicados"
+  assert.equal((await chamar(a.env, 'POST', '/api/tutores', { cookie: a.recepcao, corpo: { nome: 'Outro Sem Fone', whatsapp: '' } })).status, 201);
+  // telefone preenchido continua precisando ser válido
+  assert.equal((await chamar(a.env, 'POST', '/api/tutores', { cookie: a.recepcao, corpo: { nome: 'Fone Ruim', whatsapp: '123' } })).status, 400);
+  // cadastro rápido com chegada sem telefone
+  const r = await chamar(a.env, 'POST', '/api/cadastro-rapido', { cookie: a.recepcao, corpo: {
+    tutor: { nome: 'Joana' }, pet: { nome: 'Luna', especie: 'gato' },
+    chegada: { peso_kg: 4.2, motivo: 'Vacina', urgente: false } } });
+  assert.equal(r.status, 201);
+  assert.ok(r.dados.atendimento);
+  // busca mostra sem "final"
+  const b = await chamar(a.env, 'GET', '/api/busca?q=luna', { cookie: a.recepcao });
+  assert.equal(b.dados.resultados?.[0]?.tutor?.final_telefone ?? b.dados[0]?.tutor?.final_telefone ?? '', '');
+  // editar: colocar e depois apagar o telefone
+  const id = t.dados.id;
+  assert.equal((await chamar(a.env, 'PATCH', `/api/tutores/${id}`, { cookie: a.recepcao, corpo: { whatsapp: FONE } })).dados.whatsapp, '+5571999998888');
+  const limpo = await chamar(a.env, 'PATCH', `/api/tutores/${id}`, { cookie: a.recepcao, corpo: { whatsapp: '' } });
+  assert.equal(limpo.status, 200);
+  assert.equal(limpo.dados.whatsapp ?? null, null);
+});
