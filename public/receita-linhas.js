@@ -2,6 +2,15 @@
 // (remédio, dose, como dar, a cada, por quanto tempo). Daqui sai o texto da receita.
 // Fica num arquivo à parte para os testes poderem usar o mesmo código do app.
 
+// Junta remédio + dose sem repetir: "Amoxicilina 250 mg" + "250 mg" vira "Amoxicilina 250 mg".
+export function nomeComDose(remedio, dose) {
+  const r = String(remedio ?? '').trim();
+  const d = String(dose ?? '').trim();
+  if (!d) return r;
+  const sem = (x) => x.toLowerCase().replace(/\s+/g, '');
+  return sem(r).includes(sem(d)) ? r : [r, d].filter(Boolean).join(' ');
+}
+
 export const CAMPOS = ['remedio', 'dose', 'como', 'intervalo', 'duracao'];
 
 // Vias (jeitos de dar o remédio). A primeira é a padrão; "Outro" deixa escrever o nome da via.
@@ -28,7 +37,7 @@ function comPrefixo(valor, prefixo) {
 // Partes vazias são simplesmente puladas. Linha totalmente vazia vira ''.
 // Com { marcas: false } sai sem os asteriscos (usado na descrição do produto).
 export function linhaDaReceita(l, { marcas = true } = {}) {
-  const nome = [campo(l?.remedio), campo(l?.dose)].filter(Boolean).join(' ');
+  const nome = nomeComDose(campo(l?.remedio), campo(l?.dose));
   const modo = [campo(l?.como), comPrefixo(l?.intervalo, 'a cada'), comPrefixo(l?.duracao, 'por')].filter(Boolean).join(' ');
   const cabeca = nome && marcas ? `*${nome}*` : nome;
   return [cabeca, modo].filter(Boolean).join(' — ');
@@ -75,7 +84,7 @@ export function gruposDasLinhas(linhas) {
   const grupos = [];
   const aplicados = [];
   for (const l of linhas ?? []) {
-    const titulo = [campo(l?.remedio), campo(l?.dose)].filter(Boolean).join(' ');
+    const titulo = nomeComDose(campo(l?.remedio), campo(l?.dose));
     if (l?.aplicado === true) {
       if (!titulo) continue;
       const detalhe = detalheAplicado(l);
@@ -118,4 +127,11 @@ export function separarRemedioDose(textoSugestao) {
   const t = campo(textoSugestao);
   const m = /^(.+?)\s+(\d[\d.,]*\s?(?:mg|mcg|µg|g|ml|ui|%)(?:\s?\/\s?\w+)?)$/i.exec(t);
   return m ? { remedio: m[1].trim(), dose: m[2].trim() } : { remedio: t, dose: '' };
+}
+
+// "250 mg · caixa com 10 comprimidos" -> "250 mg"; "frasco 20 ml" -> "20 ml".
+// Pega a primeira parte com número + mg/mcg/g/ml/UI/%; sem ela, devolve '' (a dose fica para o veterinário escrever).
+export function doseDaApresentacao(apresentacao) {
+  const m = /(\d[\d.,]*\s?(?:mg|mcg|µg|g|ml|ui|%)(?:\s?\/\s?\w+)?)(?![\p{L}\d])/iu.exec(campo(apresentacao));
+  return m ? m[1].replace(/\s+/g, ' ').trim() : '';
 }

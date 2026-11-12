@@ -6,6 +6,7 @@
 //  - Nunca guardamos número de cartão: só a forma de pagamento e, se quiserem, a foto do comprovante.
 import { exigirAdmin, exigirLogin } from './auth.js';
 import { notificar } from './notificacoes.js';
+import { sincronizarSemFalhar } from './estoque.js';
 import { ErroHttp, agoraISO, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
 
 export const FORMAS = ['pix', 'cartao', 'dinheiro'];
@@ -24,12 +25,16 @@ export function reais(centavos) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format((Number.isFinite(centavos) ? centavos : 0) / 100).replace(/\s/g, ' ');
 }
 
-// Produtos "que temos" nas receitas do atendimento. Receitas canceladas não contam; e quando existe
+// Produtos "que temos" nas receitas do atendimento (menos os que vieram do carrinho: esses já estão na conta).
+// Receitas canceladas não contam; e quando existe
 // uma nova versão (que não foi cancelada), só a nova conta, para não somar duas vezes.
 // (Precisa de um "a" = atendimento na consulta que usa este trecho.)
 export const PRODUTOS_DO_ATENDIMENTO = `
   FROM receita_itens i JOIN receitas r ON r.id = i.receita_id
- WHERE r.atendimento_id = a.id AND r.status <> 'cancelada' AND i.temos = 1
+ WHERE r.atendimento_id = a.id AND r.status <> 'cancelada' AND i.temos = 1 AND i.do_carrinho = 0
+   AND NOT (i.catalogo_id IS NOT NULL AND EXISTS (
+     SELECT 1 FROM pedidos pe JOIN itens_pedido ip ON ip.pedido_id = pe.id
+      WHERE pe.atendimento_id = a.id AND pe.status <> 'cancelado' AND ip.catalogo_id = i.catalogo_id AND ip.origem = 'manual'))
    AND NOT EXISTS (SELECT 1 FROM receitas n WHERE n.receita_anterior_id = r.id AND n.status <> 'cancelada')`;
 
 const inteiro = (v, min, max) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
@@ -62,21 +67,33 @@ export function rotuloCorte(corte) {
   return m === '00' ? `${Number(h)}h` : `${Number(h)}h${m}`;
 }
 
-// Item da consulta. Os preços vêm do catálogo: a 1ª linha da categoria 'consulta' vale até o corte e a 2ª depois dele.
+// Item da consulta. Os preços vêm do catálogo, pelas marcas "papel_fixo" (consulta_dia = até o corte,
+// consulta_noite = depois do corte, retorno = volta do paciente, valor fixo do catálogo).
 // Se o atendimento ainda não começou, vale a hora de agora.
-export async function itemConsulta(env, iniciadoEm, agora = new Date()) {
+export async function itemConsulta(env, iniciadoEm, agora = new Date(), tipo = 'consulta') {
+  const { results: fixos } = await env.DB.prepare(`SELECT id, nome, preco_centavos, papel_fixo FROM catalogo WHERE papel_fixo IS NOT NULL`).all();
+  const por = (papel) => fixos.find((x) => x.papel_fixo === papel);
+  if (tipo === 'retorno' && por('retorno')) {
+    const r = por('retorno');
+    return {
+      descricao: r.nome, quantidade: 1, preco_unitario_centavos: r.preco_centavos, catalogo_id: r.id, origem: 'consulta',
+      depois_do_corte: false, hora_base: null, hora_de_corte: null, iniciado: !!iniciadoEm, tipo: 'retorno',
+      explicacao: 'Retorno do paciente: valor fixo do catálogo (não depende do horário)',
+    };
+  }
   const corte = await horaDeCorte(env);
-  const { results } = await env.DB.prepare(`SELECT id, nome, preco_centavos FROM catalogo WHERE categoria = 'consulta' ORDER BY id LIMIT 2`).all();
-  if (!results.length) return null;
+  const dia = por('consulta_dia');
+  const noite = por('consulta_noite');
+  if (!dia && !noite) return null;
   const base = iniciadoEm || agora.toISOString();
   const depois = depoisDoCorte(base, corte);
-  const linha = depois ? (results[1] ?? results[0]) : results[0];
+  const linha = depois ? (noite ?? dia) : (dia ?? noite);
   const rotulo = rotuloCorte(corte);
   const hora = horaBahia(base);
   return {
     descricao: depois ? `Consulta (após ${rotulo})` : `Consulta (até ${rotulo})`,
     quantidade: 1, preco_unitario_centavos: linha.preco_centavos, catalogo_id: linha.id, origem: 'consulta',
-    depois_do_corte: depois, hora_base: hora, hora_de_corte: corte, iniciado: !!iniciadoEm,
+    depois_do_corte: depois, hora_base: hora, hora_de_corte: corte, iniciado: !!iniciadoEm, tipo: 'consulta',
     explicacao: iniciadoEm
       ? `Atendimento iniciado às ${hora} → valor ${depois ? 'após' : 'até'} as ${rotulo}`
       : `Atendimento ainda não iniciado; usando a hora de agora (${hora}) → valor ${depois ? 'após' : 'até'} as ${rotulo}`,
@@ -100,7 +117,7 @@ export async function produtosDaReceita(env, atendimentoId) {
 // ---------- leitura ----------
 async function atendimentoComPet(env, id) {
   const a = await env.DB.prepare(
-    `SELECT a.id, a.status, a.peso_kg, a.chegada_em, a.iniciado_em, a.finalizado_em, p.id AS pet_id, p.nome AS pet_nome, p.especie, p.foto_id AS pet_foto_id,
+    `SELECT a.id, a.status, a.tipo, a.peso_kg, a.chegada_em, a.iniciado_em, a.finalizado_em, p.id AS pet_id, p.nome AS pet_nome, p.especie, p.foto_id AS pet_foto_id,
             t.id AS tutor_id, t.nome AS tutor_nome, v.nome AS vet_nome
        FROM atendimentos a JOIN pets p ON p.id = a.pet_id JOIN tutores t ON t.id = p.tutor_id LEFT JOIN usuarios v ON v.id = a.veterinario_id
       WHERE a.id = ?`
@@ -142,11 +159,11 @@ function pagamentoPublico(g) {
 export async function respostaPedido(env, atendimentoId) {
   const a = await atendimentoComPet(env, atendimentoId);
   const ped = await pedidoAtivoDe(env, atendimentoId);
-  const consulta = await itemConsulta(env, a.iniciado_em);
+  const consulta = await itemConsulta(env, a.iniciado_em, new Date(), a.tipo);
   const receita = await produtosDaReceita(env, atendimentoId);
   const automaticos = { consulta, receita: receita.itens, sem_valor: receita.sem_valor };
   const atendimento = {
-    id: a.id, status: a.status, peso_kg: a.peso_kg ?? null, chegada_em: a.chegada_em, iniciado_em: a.iniciado_em ?? null, finalizado_em: a.finalizado_em ?? null,
+    id: a.id, status: a.status, tipo: a.tipo, peso_kg: a.peso_kg ?? null, chegada_em: a.chegada_em, iniciado_em: a.iniciado_em ?? null, finalizado_em: a.finalizado_em ?? null,
     veterinario_nome: a.vet_nome ?? null,
     pet: { id: a.pet_id, nome: a.pet_nome, especie: a.especie, foto_id: a.pet_foto_id ?? null },
     tutor: { id: a.tutor_id, nome: a.tutor_nome },
@@ -298,7 +315,29 @@ async function pedidoSalvarItens(request, env, atendimentoId) {
     }),
   ];
   await env.DB.batch(comandos);
+  await sincronizarSemFalhar(env, ped.id, u.id); // estoque: baixa se a conta fechou paga; devolve se saiu de "paga"
   return json(await respostaPedido(env, atendimentoId), criou ? 201 : 200);
+}
+
+// Mudou de "consulta" para "retorno" (ou ao contrário) com a conta já criada: o item da consulta da conta
+// troca sozinho. Devolve uma função (agora) -> comandos do batch, ou null se não há nada a trocar.
+// Recusa se a conta já foi paga ou se o novo total ficaria igual/menor que o que já foi recebido.
+export async function prepararTrocaDeTipo(env, atendimentoId, novoTipo, atendimento) {
+  const ped = await pedidoAtivoDe(env, atendimentoId);
+  if (!ped) return null;
+  if (ped.status === 'pago') throw new ErroHttp(409, 'A conta já foi paga: não dá mais para trocar entre consulta e retorno. Um administrador pode desfazer o pagamento antes.');
+  const { results: atuais } = await env.DB.prepare(`SELECT preco_unitario_centavos, quantidade FROM itens_pedido WHERE pedido_id = ? AND origem = 'consulta'`).bind(ped.id).all();
+  if (!atuais.length) return null;
+  const novo = await itemConsulta(env, atendimento.iniciado_em, new Date(), novoTipo);
+  const total = ped.total_centavos - atuais.reduce((t, i) => t + i.quantidade * i.preco_unitario_centavos, 0) + (novo ? novo.preco_unitario_centavos : 0);
+  const pago = await somaPaga(env, ped.id);
+  if (pago > 0 && total <= pago) throw new ErroHttp(409, `Já foram recebidos ${reais(pago)} desta conta: não dá para trocar o tipo da visita. Peça a um administrador para desfazer o pagamento.`);
+  return (agora) => [
+    env.DB.prepare(`DELETE FROM itens_pedido WHERE pedido_id = ? AND origem = 'consulta'`).bind(ped.id),
+    ...(novo ? [env.DB.prepare(`INSERT INTO itens_pedido (pedido_id, catalogo_id, descricao, quantidade, preco_unitario_centavos, origem) VALUES (?, ?, ?, 1, ?, 'consulta')`)
+      .bind(ped.id, novo.catalogo_id, novo.descricao, novo.preco_unitario_centavos)] : []),
+    env.DB.prepare(`UPDATE pedidos SET total_centavos = ?, atualizado_em = ? WHERE id = ? AND status IN ('aberto','aguardando_pagamento')`).bind(total, agora, ped.id),
+  ];
 }
 
 // Manda a conta para a recepção cobrar e avisa a recepção no celular.
@@ -375,6 +414,7 @@ async function pagamentoRegistrar(request, env, id) {
   if (!saidas[0].meta.changes) throw new ErroHttp(409, 'Esta conta mudou enquanto você pagava. Atualize a tela e confira o que falta.');
   const pagamentoId = saidas[0].meta.last_row_id;
   const depois = await pedidoPorId(env, id);
+  await sincronizarSemFalhar(env, id, u.id); // conta ficou paga: baixa o estoque (do lote que vence antes)
   await registrarAcao(env, {
     usuarioId: u.id, acao: 'registrar_pagamento', entidade: 'pagamentos', entidadeId: pagamentoId,
     antes: { pedido_status: ped.status, pago_centavos: pagoAntes },
@@ -426,6 +466,7 @@ async function pagamentoEstornar(request, env, id) {
   ]);
   if (!saidas[0].meta.changes) throw new ErroHttp(409, 'Este pagamento já foi desfeito.');
   const depois = await pedidoPorId(env, g.pedido_id);
+  await sincronizarSemFalhar(env, g.pedido_id, adm.id); // conta reaberta: o estoque volta para os mesmos lotes
   await registrarAcao(env, {
     usuarioId: adm.id, acao: 'estornar_pagamento', entidade: 'pagamentos', entidadeId: id,
     antes: { estornado: false, forma: g.forma, valor_centavos: g.valor_centavos, pedido_status: ped.status },

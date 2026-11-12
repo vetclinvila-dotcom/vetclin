@@ -295,6 +295,11 @@ async function bancoCompleto() {
   const medic = await chamar(a.env, 'POST', `/api/internacoes/${intern.dados.internacao.id}/medicacoes`, { cookie: a.admin, corpo: { remedio: 'Dipirona', dose: '500 mg', intervalo_horas: 8 } });
   assert.equal(medic.status, 201);
   assert.equal((await chamar(a.env, 'POST', `/api/internacao-medicacoes/${medic.dados.medicacoes[0].id}/administrar`, { cookie: a.admin, corpo: {} })).status, 201);
+  // Estoque: um produto com um lote e a baixa de uma venda.
+  bruto.prepare(`INSERT INTO catalogo (nome, categoria, preco_centavos, controla_estoque, unidade, criado_em, atualizado_em) VALUES ('Dipirona gotas', 'produto', 1500, 1, 'fr', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run();
+  const prod = bruto.prepare(`SELECT id FROM catalogo WHERE nome = 'Dipirona gotas'`).get().id;
+  bruto.prepare(`INSERT INTO estoque_lotes (catalogo_id, quantidade_inicial, quantidade_atual, validade, criado_por, criado_em) VALUES (?, 10, 9, '2027-01-31', 1, '2026-01-01T00:00:00.000Z')`).run(prod);
+  bruto.prepare(`INSERT INTO estoque_movimentos (catalogo_id, lote_id, tipo, quantidade, criado_por, criado_em) VALUES (?, 1, 'entrada', 10, 1, '2026-01-01T00:00:00.000Z')`).run(prod);
   // Tabelas que NÃO podem sair no backup.
   bruto.prepare(`INSERT INTO push_chaves (id, publica, privada_jwk, contato, criado_em) VALUES (1, 'PUBLICA-SECRETA-X', 'PRIVADA-JWK-SECRETA-Y', 'a@b.c', '2026-01-01T00:00:00.000Z')`).run();
   bruto.prepare(`INSERT INTO inscricoes_push (usuario_id, endpoint, p256dh, auth, criado_em) VALUES (1, 'https://push.exemplo/ENDPOINT-SECRETO', 'P256-SECRETO', 'AUTH-SECRETO', '2026-01-01T00:00:00.000Z')`).run();
@@ -312,7 +317,7 @@ test('backup: tem todas as tabelas, exceto sessões/tentativas/push, e nenhum se
   assert.ok(Date.parse(b.gerado_em));
   assert.ok(Array.isArray(b.migracoes));
   for (const proibida of ['sessoes', 'tentativas_login', 'push_chaves', 'inscricoes_push', 'sqlite_sequence', 'd1_migrations']) assert.ok(!(proibida in b.tabelas), proibida);
-  const esperadas = ['usuarios', 'tutores', 'pets', 'atendimentos', 'catalogo', 'pedidos', 'itens_pedido', 'pagamentos', 'registro_acoes', 'contadores', 'fotos', 'receitas', 'sugestoes_receita', 'configuracoes', 'receita_itens', 'prontuario', 'baias', 'internacoes', 'internacao_medicacoes', 'administracoes'];
+  const esperadas = ['usuarios', 'tutores', 'pets', 'atendimentos', 'catalogo', 'pedidos', 'itens_pedido', 'pagamentos', 'registro_acoes', 'contadores', 'fotos', 'receitas', 'sugestoes_receita', 'configuracoes', 'receita_itens', 'prontuario', 'baias', 'internacoes', 'internacao_medicacoes', 'administracoes', 'estoque_lotes', 'estoque_movimentos'];
   assert.deepEqual(Object.keys(b.tabelas).sort(), esperadas.sort());
   for (const nome of esperadas) assert.ok(b.tabelas[nome].length > 0 || ['x'].includes(nome), `${nome} vazia`);
   // Senhas, chaves e token: nada no JSON.

@@ -385,7 +385,7 @@ async function petsVer(request, env, id) {
   const t = await buscarTutor(env, p.tutor_id);
   // Histórico de atendimentos (o peso de cada visita é o dado mais importante para os médicos).
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.chegada_em, a.status, a.motivo, a.urgente, a.peso_kg, a.peso_origem, a.foto_id, v.nome AS vet_nome
+    `SELECT a.id, a.chegada_em, a.status, a.tipo, a.motivo, a.urgente, a.peso_kg, a.peso_origem, a.foto_id, v.nome AS vet_nome
        FROM atendimentos a LEFT JOIN usuarios v ON v.id = a.veterinario_id
       WHERE a.pet_id = ? ORDER BY a.chegada_em DESC, a.id DESC LIMIT 50`
   ).bind(id).all();
@@ -406,7 +406,7 @@ async function petsVer(request, env, id) {
     atendimento_aberto: aberto ? { id: aberto.id, status: aberto.status } : null,
     receitas: receitas.map((r) => ({ id: r.id, status: r.status, versao: r.versao, liberada_em: r.liberada_em ?? null, criado_em: r.criado_em, veterinario: r.vet_nome ?? null, origem: r.origem, transcrita_por: r.origem === 'transcrita' ? r.criado_por_nome : null, previa: previa(r.inicio), total_produtos_centavos: r.total_produtos_centavos })),
     atendimentos: results.map((a) => ({
-      id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1,
+      id: a.id, chegada_em: a.chegada_em, status: a.status, tipo: a.tipo ?? 'consulta', motivo: a.motivo ?? null, urgente: a.urgente === 1,
       peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
       foto_id: a.foto_id ?? null, veterinario: a.vet_nome ?? null,
     })),

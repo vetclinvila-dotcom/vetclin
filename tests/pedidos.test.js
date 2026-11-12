@@ -466,7 +466,7 @@ test('catálogo: listar (qualquer equipe), buscar sem acento, filtros e 401', as
   assert.equal((await chamar(a.env, 'GET', '/api/catalogo')).status, 401);
   const todos = await chamar(a.env, 'GET', '/api/catalogo', { cookie: a.recepcao });
   assert.equal(todos.status, 200);
-  assert.deepEqual(todos.dados.itens.map((i) => [i.nome, i.preco_centavos]), [['Consulta (até o horário de corte)', 10000], ['Consulta (após o horário de corte)', 20000]]);
+  assert.deepEqual(todos.dados.itens.map((i) => [i.nome, i.preco_centavos]), [['Consulta (até o horário de corte)', 10000], ['Consulta (após o horário de corte)', 20000], ['Retorno', 0]]);
   await chamar(a.env, 'POST', '/api/catalogo', { cookie: a.recepcao, corpo: { nome: 'Hemograma', categoria: 'exame', preco_centavos: 6000 } });
   await chamar(a.env, 'POST', '/api/catalogo', { cookie: a.recepcao, corpo: { nome: 'Antipulgas', categoria: 'produto', preco_centavos: 8900, ativo: false } });
   const q = (qs) => chamar(a.env, 'GET', '/api/catalogo' + qs, { cookie: a.suporte });
@@ -477,7 +477,7 @@ test('catálogo: listar (qualquer equipe), buscar sem acento, filtros e 401', as
   assert.equal((await q('?q=antipulgas&inativos=1')).dados.itens.length, 1);
   assert.equal((await q('?categoria=xx')).status, 400);
   // ordem por categoria
-  assert.deepEqual((await q('?inativos=1')).dados.itens.map((i) => i.categoria), ['consulta', 'consulta', 'exame', 'produto']);
+  assert.deepEqual((await q('?inativos=1')).dados.itens.map((i) => i.categoria), ['consulta', 'consulta', 'consulta', 'exame', 'produto']);
 });
 
 test('catálogo: criar, alterar, desativar (todas as funções da equipe) e registrar', async () => {

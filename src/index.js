@@ -13,6 +13,7 @@ import { ROTAS_RECEITAS } from './receitas.js';
 import { ROTAS_PUSH } from './notificacoes.js';
 import { ROTAS_PEDIDOS } from './pedidos.js';
 import { ROTAS_CATALOGO } from './catalogo.js';
+import { ROTAS_ESTOQUE } from './estoque.js';
 import { ROTAS_INTEGRACAO } from './integracao.js';
 import { ROTAS_PRONTUARIO } from './prontuario.js';
 import { ROTAS_INTERNACAO } from './internacao.js';
@@ -233,6 +234,7 @@ const ROTAS = [
   ...ROTAS_PUSH,
   ...ROTAS_PEDIDOS,
   ...ROTAS_CATALOGO,
+  ...ROTAS_ESTOQUE,
   ...ROTAS_INTEGRACAO,
   ...ROTAS_PRONTUARIO,
   ...ROTAS_INTERNACAO,

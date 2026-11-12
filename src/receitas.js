@@ -6,6 +6,7 @@ import { ErroHttp, agoraISO, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao
 import { likeSeguro, normalizarBusca, normalizarWhatsapp } from './cadastro.js';
 import { notificar } from './notificacoes.js';
 // Regras do Pix (chave, nome, cidade) ficam em public/pix.js: o app e o servidor usam o mesmo código.
+import { doseDaApresentacao, linhaDaReceita, textoDasLinhas } from '../public/receita-linhas.js';
 import { MAX_CIDADE_PIX, MAX_NOME_PIX, normalizarTextoPix, validarChavePix } from '../public/pix.js';
 
 const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem escreve, pede e cancela
@@ -95,6 +96,15 @@ export function lerLinhas(valor) {
       if (t.length > max) throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} está grande demais (máximo ${max} letras).`);
       linha[campo] = t;
     }
+    // "do_carrinho": linha criada a partir do carrinho (o produto já está na conta; não cobrar de novo) e o produto do catálogo.
+    if (x.do_carrinho !== undefined && x.do_carrinho !== null) {
+      if (typeof x.do_carrinho !== 'boolean') throw new ErroHttp(400, `O campo do_carrinho do remédio ${n + 1} deve ser verdadeiro ou falso.`);
+      if (x.do_carrinho) linha.do_carrinho = true;
+    }
+    if (x.catalogo_id !== undefined && x.catalogo_id !== null) {
+      if (!Number.isInteger(x.catalogo_id) || x.catalogo_id < 1) throw new ErroHttp(400, `Produto inválido no remédio ${n + 1}.`);
+      linha.catalogo_id = x.catalogo_id;
+    }
     // "aplicado": remédio aplicado na própria clínica (cobra, mas o tutor não compra). Só entra se a tela enviar.
     if (x.aplicado !== undefined && x.aplicado !== null) {
       if (typeof x.aplicado !== 'boolean') throw new ErroHttp(400, `O campo aplicado do remédio ${n + 1} deve ser verdadeiro ou falso.`);
@@ -175,10 +185,11 @@ async function ultimoPeso(env, petId) {
 // "itens_sem_valor" = quantos estão marcados como "temos" mas sem valor digitado.
 async function produtosDaReceita(env, id) {
   const { results } = await env.DB.prepare(
-    `SELECT id, ordem, descricao, temos, quantidade, valor_unitario_centavos FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
+    `SELECT id, ordem, descricao, temos, quantidade, valor_unitario_centavos, do_carrinho, catalogo_id FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
   ).bind(id).all();
   const itens = results.map((i) => ({
     id: i.id, ordem: i.ordem, descricao: i.descricao, temos: i.temos === 1, quantidade: i.quantidade, valor_unitario_centavos: i.valor_unitario_centavos ?? null,
+    do_carrinho: i.do_carrinho === 1, catalogo_id: i.catalogo_id ?? null,
   }));
   return {
     itens,
@@ -462,8 +473,8 @@ async function receitasNovaVersao(request, env, id) {
   const novoId = r.meta.last_row_id;
   // Os produtos e valores já digitados vão junto para a nova versão.
   await env.DB.prepare(
-    `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, atualizado_em, atualizado_por)
-     SELECT ?, ordem, descricao, temos, quantidade, valor_unitario_centavos, ?, ? FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
+    `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, do_carrinho, catalogo_id, atualizado_em, atualizado_por)
+     SELECT ?, ordem, descricao, temos, quantidade, valor_unitario_centavos, do_carrinho, catalogo_id, ?, ? FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
   ).bind(novoId, agora, u.id, id).run();
   await registrarAcao(env, { usuarioId: u.id, acao: 'nova_versao_receita', entidade: 'receitas', entidadeId: novoId, depois: { receita_anterior_id: id, versao: base.versao + 1, texto_tamanho: base.texto.length }, ip: ipDe(request) });
   return json(await detalheReceita(env, novoId), 201);
@@ -481,7 +492,16 @@ function lerItens(c) {
     if (!descricao) throw new ErroHttp(400, `Falta a descrição do ${nome}.`);
     if (x.temos !== true && x.temos !== false && x.temos !== 0 && x.temos !== 1) throw new ErroHttp(400, `Responda "Temos o produto?" no ${nome}.`);
     const temos = x.temos === true || x.temos === 1;
-    if (!temos) return { descricao, temos: 0, quantidade: 1, valor: null };
+    // Produto que veio do carrinho: já está na conta, então aqui só é guardado (nunca cobrado de novo).
+    if (x.do_carrinho !== undefined && x.do_carrinho !== null && typeof x.do_carrinho !== 'boolean') throw new ErroHttp(400, `O campo do_carrinho do ${nome} deve ser verdadeiro ou falso.`);
+    const doCarrinho = x.do_carrinho === true ? 1 : 0;
+    let catalogoId = null;
+    if (x.catalogo_id !== undefined && x.catalogo_id !== null) {
+      if (!Number.isInteger(x.catalogo_id) || x.catalogo_id < 1) throw new ErroHttp(400, `Produto inválido no ${nome}.`);
+      catalogoId = x.catalogo_id;
+    }
+    const informouMarca = x.do_carrinho !== undefined || x.catalogo_id !== undefined; // tela antiga não manda as marcas
+    if (!temos) return { descricao, temos: 0, quantidade: 1, valor: null, doCarrinho, catalogoId, informouMarca };
     let quantidade = 1;
     if (x.quantidade !== undefined && x.quantidade !== null) {
       quantidade = x.quantidade;
@@ -492,7 +512,7 @@ function lerItens(c) {
       valor = x.valor_unitario_centavos;
       if (!Number.isInteger(valor) || valor < 0 || valor > MAX_VALOR_CENTAVOS) throw new ErroHttp(400, `O valor do ${nome} deve ficar entre R$ 0,00 e R$ 100.000,00.`);
     }
-    return { descricao, temos: 1, quantidade, valor };
+    return { descricao, temos: 1, quantidade, valor, doCarrinho, catalogoId, informouMarca };
   });
 }
 
@@ -508,13 +528,21 @@ async function receitasItensSalvar(request, env, id) {
   if (r.status === 'cancelada') throw new ErroHttp(409, 'Esta receita foi cancelada e não pode mais ser alterada.');
   const itens = lerItens(c);
   const antes = await produtosDaReceita(env, id);
+  // Quem não informa as marcas "do carrinho" (tela antiga, ou a lista de produtos de uma receita liberada) não pode
+  // apagá-las sem querer: o produto com o mesmo texto herda a marca que já estava gravada (senão a conta cobraria em dobro).
+  const marcados = antes.itens.filter((i) => i.do_carrinho);
+  for (const i of itens) {
+    if (i.informouMarca) continue;
+    const k = marcados.findIndex((m) => m.descricao.trim().toLowerCase() === i.descricao.trim().toLowerCase());
+    if (k >= 0) { i.doCarrinho = 1; i.catalogoId = marcados[k].catalogo_id; marcados.splice(k, 1); }
+  }
   const agora = agoraISO();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM receita_itens WHERE receita_id = ?').bind(id),
     ...itens.map((i, n) => env.DB.prepare(
-      `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, atualizado_em, atualizado_por)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, n, i.descricao, i.temos, i.quantidade, i.valor, agora, u.id)),
+      `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, do_carrinho, catalogo_id, atualizado_em, atualizado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, n, i.descricao, i.temos, i.quantidade, i.valor, i.doCarrinho, i.catalogoId, agora, u.id)),
   ]);
   const depois = await produtosDaReceita(env, id);
 
@@ -527,6 +555,88 @@ async function receitasItensSalvar(request, env, id) {
     await registrarAcao(env, { usuarioId: u.id, acao: 'editar_valores_receita', entidade: 'receitas', entidadeId: id, antes: resumoValores(antes), depois: resumoValores(depois), ip: ipDe(request) });
   }
   return json({ ok: true, itens: depois.itens, total_produtos_centavos: depois.total_produtos_centavos, itens_sem_valor: depois.itens_sem_valor });
+}
+
+// ---------- receita montada com os produtos do carrinho ----------
+// A conta já tem os produtos (carrinho). Aqui o veterinário monta a receita com uma linha por produto: remédio = nome,
+// dose = parte "mg/ml" da apresentação, "Temos" = Sim com o preço da conta. Essas linhas levam do_carrinho = true:
+// o valor delas NÃO volta para a conta (já está lá). Chamar de novo atualiza as quantidades, acrescenta os produtos
+// novos e tira os que saíram do carrinho; linhas que o veterinário escreveu à mão ficam como estão.
+async function receitaDoCarrinho(request, env, atendimentoId) {
+  const u = await exigirPapel(request, env, PAPEIS_CLINICOS);
+  const a = await env.DB.prepare('SELECT id, pet_id, status FROM atendimentos WHERE id = ?').bind(atendimentoId).first();
+  if (!a) throw new ErroHttp(404, 'Atendimento não encontrado.');
+  if (a.status === 'cancelado') throw new ErroHttp(409, 'Este atendimento foi cancelado.');
+  const { results: bruto } = await env.DB.prepare(
+    `SELECT i.catalogo_id, i.quantidade, i.preco_unitario_centavos, c.nome, c.apresentacao, c.categoria
+       FROM itens_pedido i JOIN pedidos p ON p.id = i.pedido_id JOIN catalogo c ON c.id = i.catalogo_id
+      WHERE p.atendimento_id = ? AND p.status <> 'cancelado' AND i.origem = 'manual' AND c.papel_fixo IS NULL AND c.categoria NOT IN ('consulta','exame')
+      ORDER BY i.id`
+  ).bind(atendimentoId).all();
+  const carrinho = new Map();
+  for (const i of bruto) {
+    const x = carrinho.get(i.catalogo_id);
+    if (x) x.quantidade += i.quantidade; else carrinho.set(i.catalogo_id, { ...i });
+  }
+  if (!carrinho.size) throw new ErroHttp(409, 'O carrinho está vazio. Adicione os produtos antes de montar a receita.');
+
+  // Receita em rascunho deste atendimento (ou cria uma).
+  let r = await env.DB.prepare(`SELECT * FROM receitas WHERE atendimento_id = ? AND status = 'rascunho' ORDER BY id DESC LIMIT 1`).bind(atendimentoId).first();
+  const agora = agoraISO();
+  let criou = false;
+  if (!r) {
+    const ins = await env.DB.prepare(`INSERT INTO receitas (pet_id, atendimento_id, criado_por, texto, status, versao, criado_em, atualizado_em) VALUES (?, ?, ?, '', 'rascunho', 1, ?, ?)`)
+      .bind(a.pet_id, atendimentoId, u.id, agora, agora).run();
+    r = await receitaBruta(env, ins.meta.last_row_id);
+    criou = true;
+  }
+  if (!linhasDoBanco(r.linhas_json) && (r.texto ?? '').trim()) throw new ErroHttp(409, 'Esta receita foi escrita como texto livre (colada do WhatsApp). Apague o texto ou crie uma receita nova para usar o carrinho.');
+  const linhas = linhasDoBanco(r.linhas_json) ?? [];
+  const { results: itensAtuais } = await env.DB.prepare('SELECT * FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id').bind(r.id).all();
+  // Cada linha preenchida tem, na mesma ordem, um item (produto); linhas vazias não têm.
+  let n = 0;
+  const pares = linhas.map((l) => ({ linha: l, item: linhaDaReceita(l) ? (itensAtuais[n++] ?? null) : null }));
+
+  const mantidas = [];
+  const presentes = new Set();
+  for (const p of pares) {
+    const cid = p.linha.catalogo_id;
+    if (p.linha.do_carrinho && cid) {
+      const c = carrinho.get(cid);
+      if (!c) continue; // saiu do carrinho: sai da receita
+      presentes.add(cid);
+      mantidas.push({ linha: p.linha, item: { descricao: p.item?.descricao ?? descricaoDoItem(p.linha), temos: 1, quantidade: Math.min(c.quantidade, MAX_QUANTIDADE), valor: c.preco_unitario_centavos, doCarrinho: 1, catalogoId: cid } });
+    } else {
+      if (cid) presentes.add(cid);
+      mantidas.push({ linha: p.linha, item: p.item ? { descricao: p.item.descricao, temos: p.item.temos, quantidade: p.item.quantidade, valor: p.item.valor_unitario_centavos, doCarrinho: p.item.do_carrinho, catalogoId: p.item.catalogo_id } : null });
+    }
+  }
+  for (const [cid, c] of carrinho) {
+    if (presentes.has(cid)) continue;
+    const linha = {
+      remedio: c.nome.slice(0, 200), dose: doseDaApresentacao(c.apresentacao).slice(0, 200), como: '', intervalo: '', duracao: '',
+      via: c.categoria === 'vacina' ? 'Uso injetável' : 'Uso oral', comprar: '', aplicado: false, do_carrinho: true, catalogo_id: cid,
+    };
+    mantidas.push({ linha, item: { descricao: descricaoDoItem(linha), temos: 1, quantidade: Math.min(c.quantidade, MAX_QUANTIDADE), valor: c.preco_unitario_centavos, doCarrinho: 1, catalogoId: cid } });
+  }
+
+  const novasLinhas = mantidas.map((m) => m.linha);
+  const novosItens = mantidas.filter((m) => m.item && linhaDaReceita(m.linha)).map((m) => m.item);
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE receitas SET texto = ?, linhas_json = ?, atualizado_em = ? WHERE id = ? AND status = 'rascunho'`).bind(textoDasLinhas(novasLinhas), JSON.stringify(novasLinhas), agora, r.id),
+    env.DB.prepare('DELETE FROM receita_itens WHERE receita_id = ?').bind(r.id),
+    ...novosItens.map((i, k) => env.DB.prepare(
+      `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, do_carrinho, catalogo_id, atualizado_em, atualizado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(r.id, k, i.descricao, i.temos, i.quantidade, i.valor, i.doCarrinho, i.catalogoId, agora, u.id)),
+    prepararAcao(env, { usuarioId: u.id, acao: 'receita_do_carrinho', entidade: 'receitas', entidadeId: r.id, depois: { atendimento_id: atendimentoId, produtos: carrinho.size, remedios: novasLinhas.length, criada: criou }, ip: ipDe(request) }),
+  ]);
+  return json({ ...(await detalheReceita(env, r.id)), existente: !criou }, criou ? 201 : 200);
+}
+
+// Texto do produto na lista da receita (sem as marcas do WhatsApp), até 300 letras.
+function descricaoDoItem(linha) {
+  return (linhaDaReceita(linha, { marcas: false }).slice(0, 300)).trim();
 }
 
 async function receitasCancelar(request, env, id) {
@@ -667,6 +777,7 @@ async function veterinariosListar(request, env) {
 }
 
 export const ROTAS_RECEITAS = [
+  ['POST', '/api/atendimentos/:id/receita-do-carrinho', receitaDoCarrinho],
   ['GET', '/api/receitas', receitasListar],
   ['POST', '/api/receitas', receitasCriar],
   ['GET', '/api/receitas/:id', receitasVer],

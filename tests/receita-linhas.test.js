@@ -100,3 +100,13 @@ test('separar sugestão em remédio e dose', () => {
   assert.deepEqual(separarRemedioDose('Omeprazol'), { remedio: 'Omeprazol', dose: '' });
   assert.deepEqual(separarRemedioDose('Vitamina C 2 vezes'), { remedio: 'Vitamina C 2 vezes', dose: '' });
 });
+
+test('nomeComDose não repete a dose que já está no nome do produto', async () => {
+  const { nomeComDose, gruposDasLinhas } = await import('../public/receita-linhas.js');
+  assert.equal(nomeComDose('Amoxicilina 250 mg', '250 mg'), 'Amoxicilina 250 mg');
+  assert.equal(nomeComDose('Amoxicilina 250mg', '250 mg'), 'Amoxicilina 250mg');
+  assert.equal(nomeComDose('Amoxicilina', '250 mg'), 'Amoxicilina 250 mg');
+  assert.equal(nomeComDose('Dipirona', ''), 'Dipirona');
+  const g = gruposDasLinhas([{ remedio: 'Amoxicilina 250 mg', dose: '250 mg', como: '1 comprimido', intervalo: '12 h', duracao: '7 dias' }]);
+  assert.equal(g[0].itens[0].titulo, 'Amoxicilina 250 mg');
+});

@@ -465,8 +465,16 @@ test('migração 0010 roda sobre um banco com dados das migrações 0001-0009 e 
   const antes = JSON.stringify(['usuarios', 'tutores', 'pets', 'atendimentos', 'receitas', 'catalogo', 'configuracoes'].map((x) => b.prepare(`SELECT * FROM ${x}`).all()));
   assert.throws(() => b.prepare('SELECT 1 FROM prontuario').get(), /no such table/);
   db.migrarRestante();
-  // A coluna nova iniciado_por (migração 0011) nasce vazia nos atendimentos antigos; fora ela, nada muda.
-  const semNova = (linhas) => linhas.map((l) => { const { iniciado_por: nova, ...resto } = l; assert.ok(nova === undefined || nova === null); return resto; });
+  // As colunas novas (0011: iniciado_por; 0012: tipo, peso_em e as do catálogo) não mudam o que já existia.
+  // A 0012 só acrescenta o item "Retorno" ao catálogo e marca as duas consultas; esses itens ficam de fora da comparação.
+  const NOVAS = ['iniciado_por', 'peso_em', 'papel_fixo', 'apresentacao', 'controla_estoque', 'unidade'];
+  const semNova = (linhas) => linhas.filter((l) => l.nome !== 'Retorno').map((l) => {
+    const resto = { ...l };
+    for (const c of NOVAS) delete resto[c];
+    assert.ok(resto.tipo === undefined || resto.tipo === 'consulta');
+    delete resto.tipo;
+    return resto;
+  });
   assert.equal(JSON.stringify(['usuarios', 'tutores', 'pets', 'atendimentos', 'receitas', 'catalogo', 'configuracoes'].map((x) => semNova(b.prepare(`SELECT * FROM ${x}`).all()))), antes);
   assert.deepEqual(b.prepare('SELECT nome, ordem, ativa FROM baias ORDER BY ordem').all().map((x) => ({ ...x })), [{ nome: 'Baia 1', ordem: 1, ativa: 1 }, { nome: 'Baia 2', ordem: 2, ativa: 1 }]);
   assert.deepEqual(b.prepare('PRAGMA foreign_key_check').all(), []);

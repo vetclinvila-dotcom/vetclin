@@ -11,6 +11,7 @@ import { qrParaSvg } from './qr.js';
 import { linkWhatsapp as linkWhatsappFinanceiro, montarMensagemFinanceiro, nomeArquivoComprovante } from './mensagem-financeiro.js';
 import { ROTULO_CATEGORIA, ROTULO_FORMA, atualizarDaReceita, estadoDaConta, receitaDesatualizada, totalDosItens, trocoDe } from './conta-regras.js';
 import { MAX_QUANTIDADE, adicionarProduto, filtrarProdutos, produtosDoCarrinho, quantidadeNoCarrinho, removerUmProduto, resumoCarrinho } from './carrinho.js';
+import { UNIDADES, formatarDataIso, formatarQuantidade, lerQuantidadeDigitada, linkTelefoneDe, linkWhatsappDe, textoDura, textoMedia, textoRestam, textoValidade } from './estoque-regras.js';
 import { inicioBahiaParaISO, isoParaCampoBahia, ordinalDia, pilulaProxima, resumoInternados, tempoInternado, textoIntervalo, textoStatusMedicacao } from './internacao-regras.js';
 
 const raiz = document.getElementById('app');
@@ -538,6 +539,19 @@ function escolhaUrgencia(inicial = false) {
   return { caixa: el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': 'Urgência' }, normal, forte), valor: () => urgente };
 }
 
+// Escolha "Consulta" / "Retorno" (dois botões grandes). Retorno = paciente que volta (mesmo que ainda não esteja no sistema).
+function escolhaTipoVisita(inicial = 'consulta') {
+  let tipo = inicial === 'retorno' ? 'retorno' : 'consulta';
+  const consulta = el('button', { type: 'button', class: 'opcao', role: 'radio', id: 'tipo-consulta' }, 'Consulta');
+  const retorno = el('button', { type: 'button', class: 'opcao', role: 'radio', id: 'tipo-retorno' }, 'Retorno');
+  const nota = el('p', { class: 'suave nota-tipo' }, 'Retorno usa o item "Retorno" do catálogo na conta (sem cobrar a consulta pelo horário).');
+  const marcar = () => { consulta.setAttribute('aria-checked', String(tipo === 'consulta')); retorno.setAttribute('aria-checked', String(tipo === 'retorno')); nota.hidden = tipo !== 'retorno'; };
+  consulta.addEventListener('click', () => { tipo = 'consulta'; marcar(); });
+  retorno.addEventListener('click', () => { tipo = 'retorno'; marcar(); });
+  marcar();
+  return { caixa: el('div', { class: 'bloco-tipo-visita' }, el('label', {}, 'Tipo de visita'), el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': 'Tipo de visita' }, consulta, retorno), nota), valor: () => tipo };
+}
+
 // "Para quem?": botões grandes "Qualquer veterinário" (padrão) + um por veterinário ativo.
 // valor() devolve o id do veterinário escolhido, ou null (= qualquer veterinário).
 function escolhaParaQuem(veterinarios, inicialId = null) {
@@ -741,6 +755,8 @@ function nomeComTitulo(pessoa) {
 function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
   const p = a.pet;
   const abrirFicha = () => irPara(`#/pet/${p.id}`);
+  // Veterinário/suporte tocando num "Em atendimento" abre a tela cheia da consulta.
+  const abrirCartao = a.status === 'em_atendimento' && PODE_ATENDER.includes(usuario.papel) ? () => irPara(`#/consulta/${a.id}`) : abrirFicha;
   const idade = idadeCurta(p);
   // Se chegou em outro dia (atendimento esquecido aberto), mostra a data também.
   const quando = a.de_outro_dia ? `em ${formatarDia(a.chegada_em)} às ${formatarHora(a.chegada_em)}` : formatarHora(a.chegada_em);
@@ -758,7 +774,7 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
       a.status === 'finalizado' ? null : el('button', { type: 'button', class: 'secundario adicionar-peso', onclick: (ev) => { ev.stopPropagation(); adicionarPeso(a, aoAtualizar); } }, 'Adicionar peso'))
     : el('span', { class: 'peso-grande' }, formatarPeso(a.peso_kg));
 
-  const corpo = el('div', { class: 'atend-corpo', role: 'link', tabindex: '0', 'aria-label': `Abrir ficha de ${p.nome}`, onclick: abrirFicha },
+  const corpo = el('div', { class: 'atend-corpo', role: 'link', tabindex: '0', 'aria-label': abrirCartao === abrirFicha ? `Abrir ficha de ${p.nome}` : `Abrir a consulta de ${p.nome}`, onclick: abrirCartao },
     miniatura(p.foto_id || a.foto_id, p.nome),
     el('div', { class: 'atend-info' },
       el('div', { class: 'atend-linha-nome' }, el('strong', { class: 'atend-nome' }, p.nome), a.sem_peso ? null : pesoNo),
@@ -766,8 +782,9 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
       el('span', { class: 'atend-sub' }, `${[ROTULO_ESPECIE[p.especie] || p.especie, idade].filter(Boolean).join(', ')} · Tutor: ${a.tutor.nome}${a.tutor.final_telefone ? ' · final ' + a.tutor.final_telefone : ''}`),
       a.motivo ? el('span', { class: 'atend-motivo' }, a.motivo) : null,
       a.status === 'chegou' && a.para_veterinario ? paraPilula(a.para_veterinario) : null,
+      a.tipo === 'retorno' ? el('span', { class: 'pilula retorno' }, 'Retorno') : null,
       pilula()));
-  corpo.addEventListener('keydown', (ev) => { if (ev.target === corpo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFicha(); } });
+  corpo.addEventListener('keydown', (ev) => { if (ev.target === corpo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirCartao(); } });
 
   // Roda uma ação (chamada à API) e atualiza a lista.
   const rodar = (botao, funcao) => async () => {
@@ -793,11 +810,16 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
     botoes.push(b);
   }
   if (a.status === 'chegou' && PODE_ATENDER.includes(usuario.papel)) {
-    const b = el('button', { type: 'button', class: 'iniciar' }, 'Iniciar atendimento');
-    b.addEventListener('click', rodar(b, () => api('POST', `/api/atendimentos/${a.id}/iniciar`)));
+    // "Iniciar consulta": começa o atendimento e já abre a tela cheia da consulta.
+    const b = el('button', { type: 'button', class: 'iniciar iniciar-consulta' }, 'Iniciar consulta');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await api('POST', `/api/atendimentos/${a.id}/iniciar`); irPara(`#/consulta/${a.id}`); } catch (e) { b.disabled = false; await aoAtualizar(); aoErro(e); }
+    });
     botoes.push(b);
   }
   if (a.status === 'em_atendimento' && PODE_ATENDER.includes(usuario.papel)) {
+    botoes.push(el('button', { type: 'button', class: 'iniciar abrir-consulta', onclick: () => irPara(`#/consulta/${a.id}`) }, 'Abrir consulta'));
     const b = el('button', { type: 'button', class: 'finalizar' }, 'Finalizar');
     b.addEventListener('click', async () => {
       if (await confirmar(`Finalizar o atendimento de ${p.nome}?`, 'Depois de finalizado, ele sai da lista de atendimentos em andamento.', 'Sim, finalizar')) {
@@ -888,11 +910,13 @@ function telaHoje() {
         el('p', { class: 'hoje-data' }, dataDeHoje(), contagemTitulo)),
       el('div', { class: 'hoje-acoes' },
         el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/chegada/nova') }, icone('mais', 22, 2.6), 'Registrar chegada'),
+        el('button', { type: 'button', class: 'secundario retorno-rapido', id: 'registrar-retorno', onclick: () => irPara('#/chegada/nova?tipo=retorno') }, 'Retorno'),
         el('button', { type: 'button', class: 'secundario buscar', id: 'buscar-paciente', onclick: () => irPara('#/busca') }, icone('buscar', 18), 'Buscar paciente'))),
     cartaoAviso,
     avisos, faixaInternacao, colunas,
     el('div', { class: 'acoes atalhos-rodape so-celular' },
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/internacao') }, 'Internação'),
+      el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/estoque') }, 'Estoque'),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/precos') }, 'Preços'),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/notificacoes') }, 'Notificações'),
       usuario.admin ? el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/caixa') }, 'Caixa de hoje') : null,
@@ -1096,7 +1120,7 @@ function cartaoCandidato(c, aoEscolher) {
 }
 
 // "petPre" = id de um pet já escolhido (vem da ficha do pet: #/chegada/123).
-async function telaChegadaNova(petPre = null) {
+async function telaChegadaNova(petPre = null, consulta = '') {
   const minha = versaoTela;
   let escolhido = null; // candidato escolhido ("É este"); null = cadastro novo
   if (petPre) {
@@ -1106,6 +1130,7 @@ async function telaChegadaNova(petPre = null) {
   }
 
   const especie = escolhaEspecie('');
+  const tipoVisita = escolhaTipoVisita(new URLSearchParams(consulta).get('tipo')); // "Retorno" da tela Hoje abre já marcado
   const campos = camposChegada({ nomePet: 'pet', veterinarios: await veterinariosAtivos() });
   const area = el('div');
   const sugestoes = el('div', { id: 'sugestoes' });
@@ -1167,14 +1192,14 @@ async function telaChegadaNova(petPre = null) {
   }
   for (const x of [entradaPet, entradaTutor, entradaFone]) x.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(procurar, 300); });
 
-  const f = el('form', { novalidate: true }, cabecaEscolhido, blocoNomes, blocoNovo, el('div', { class: 'divisor' }), blocoPeso, el('div', { class: 'bloco-chegada' }, ...campos.resto), area, botao);
+  const f = el('form', { novalidate: true }, tipoVisita.caixa, cabecaEscolhido, blocoNomes, blocoNovo, el('div', { class: 'divisor' }), blocoPeso, el('div', { class: 'bloco-chegada' }, ...campos.resto), area, botao);
   desenharEscolhido();
 
   async function enviar(extra = {}) {
     area.replaceChildren();
     botao.disabled = true;
     try {
-      const chegada = await campos.coletar(); // confere peso/motivo e envia a foto
+      const chegada = { ...(await campos.coletar()), tipo: tipoVisita.valor() }; // confere peso/motivo, envia a foto e leva o tipo da visita
       if (escolhido) {
         await api('POST', '/api/atendimentos', { pet_id: escolhido.pet.id, ...chegada });
       } else {
@@ -1255,7 +1280,9 @@ async function telaEditarAtendimento(id) {
   });
   const area = el('div');
   const botao = el('button', { type: 'submit' }, 'Salvar');
+  const tipoVisita = escolhaTipoVisita(a.tipo);
   const f = el('form', { novalidate: true },
+    tipoVisita.caixa,
     a.sem_peso ? el('p', { class: 'aviso-peso' }, 'Este paciente está sem peso. Informe abaixo, ou salve sem peso por enquanto.') : null,
     ...campos.peso, ...campos.resto, area, botao);
   f.addEventListener('submit', async (ev) => {
@@ -1269,6 +1296,7 @@ async function telaEditarAtendimento(id) {
       const corpo = { motivo, urgente: f.querySelector('#urgencia-urgente').getAttribute('aria-checked') === 'true' };
       if (kg !== null) corpo.peso_kg = kg;
       else if (!a.sem_peso) throw new Error('Informe o peso em kg.');
+      if (tipoVisita.valor() !== (a.tipo ?? 'consulta')) corpo.tipo = tipoVisita.valor();
       if (a.status === 'chegou') corpo.para_veterinario_id = campos.paraQuem.valor();
       if (campos.foto.mudou()) corpo.foto_id = await campos.foto.resolver();
       await api('PATCH', `/api/atendimentos/${id}`, corpo);
@@ -1668,10 +1696,11 @@ function cabecalho() {
   return el('header', { class: 'topo-app' }, el('div', { class: 'topo-dentro' },
     el('a', { class: 'marca', href: '#/hoje', 'aria-label': 'Vetclin — tela Hoje' }, el('img', { class: 'logo', src: '/logo-vetclin.png', alt: 'Vetclin Clínica Veterinária', width: 122, height: 38 })),
     usuario ? el('nav', { class: 'nav-principal', 'aria-label': 'Principal' },
-      atalho('Hoje', '#/hoje', /^#\/(hoje|chegada|atendimento|conta)/.test(h) || h === '#/'),
+      atalho('Hoje', '#/hoje', /^#\/(hoje|chegada|atendimento|conta|consulta)/.test(h) || h === '#/'),
       atalho('Internação', '#/internacao', h.startsWith('#/internacao')),
       atalho('Pacientes', '#/busca', /^#\/(busca|pet|tutor)/.test(h)),
       atalho('Receitas', '#/receitas/imprimir', /^#\/receita/.test(h)),
+      atalho('Estoque', '#/estoque', h.startsWith('#/estoque')),
       atalho('Preços', '#/precos', h.startsWith('#/precos')),
       atalho('Notificações', '#/notificacoes', h.startsWith('#/notificacoes')),
       usuario.admin ? atalho('Caixa', '#/caixa', h.startsWith('#/caixa')) : null,
@@ -2011,6 +2040,7 @@ function secaoProdutos(d, pegarTexto, minha) {
     descricao: i.descricao, temos: i.temos, qtd: String(i.quantidade), valor: i.temos ? reaisParaCampo(i.valor_unitario_centavos) : '',
   }));
   let itens = itensDoTexto(d.receita.texto, anteriores);
+  const doCarrinho = new Set(d.receita.itens.filter((i) => i.do_carrinho).map((i) => i.descricao));
   const lista = el('div', { class: 'produtos-lista' });
   const total = el('div', { class: 'produtos-total', id: 'produtos-total' });
   const aviso = el('div', { class: 'aviso-peso produtos-aviso', id: 'produtos-aviso' });
@@ -2062,7 +2092,7 @@ function secaoProdutos(d, pegarTexto, minha) {
       el('label', { class: 'produto-campo' }, 'Valor (R$)', valor),
       subtotal);
     linha.append(
-      el('div', { class: 'produto-nome' }, it.descricao),
+      el('div', { class: 'produto-nome' }, it.descricao, doCarrinho.has(it.descricao) ? el('span', { class: 'etiqueta carrinho-etiqueta' }, 'Do carrinho · já na conta') : null),
       el('div', { class: 'produto-temos' },
         el('span', { class: 'produto-pergunta' }, 'Temos?'),
         el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': `Temos o produto ${it.descricao}?` }, nao, sim)),
@@ -2176,17 +2206,19 @@ function editorColunas(d, minha, aoMudar) {
   const total = el('div', { class: 'produtos-total', id: 'produtos-total' });
   const aviso = el('div', { class: 'aviso-peso produtos-aviso', id: 'produtos-aviso' });
   const estado = el('div', { class: 'estado-salvo', id: 'produtos-estado', role: 'status' });
+  const notaCarrinho = el('p', { class: 'suave nota-carrinho-total', hidden: true }, 'Os produtos "do carrinho" já estão na conta e não entram neste total.');
   const adicionar = el('button', { type: 'button', class: 'adicionar', id: 'adicionar-remedio' }, icone('mais', 20, 2.4), 'Adicionar remédio');
   const caixa = el('section', { class: 'cartao remedios-secao', id: 'remedios-secao' },
     el('h2', {}, 'Remédios'),
     el('p', { class: 'suave' }, 'Um remédio por cartão. "Temos?", Qtd (cobrança) e valor são só para a equipe e não saem no papel.'),
-    lista, el('div', { class: 'acoes' }, adicionar), total, aviso, estado);
+    lista, el('div', { class: 'acoes' }, adicionar), total, notaCarrinho, aviso, estado);
 
   const quantidadeDe = (it) => lerQuantidade(it.qtd) ?? 1;
   const valorDe = (it) => { const v = lerReais(it.valor); return v !== null && v <= MAX_VALOR_CENTAVOS ? v : null; };
-  const subtotalDe = (it) => (it.temos && valorDe(it) !== null ? quantidadeDe(it) * valorDe(it) : 0);
+  // Linhas "do carrinho" já estão na conta: não entram no total daqui nem pedem valor (não cobram de novo).
+  const subtotalDe = (it) => (!it.do_carrinho && it.temos && valorDe(it) !== null ? quantidadeDe(it) * valorDe(it) : 0);
   const preenchidas = () => linhas.filter((it) => linhaDaReceita(it));
-  const semValor = () => preenchidas().filter((it) => it.temos && valorDe(it) === null);
+  const semValor = () => preenchidas().filter((it) => !it.do_carrinho && it.temos && valorDe(it) === null);
   // Aplicado aqui: a descrição leva o aviso, para a conta mostrar que foi aplicado na clínica.
   const descricao = (it) => (linhaDaReceita(it, { marcas: false }).slice(0, it.aplicado ? 270 : 300) + (it.aplicado ? ' (aplicado na clínica)' : '')).trim();
 
@@ -2195,6 +2227,7 @@ function editorColunas(d, minha, aoMudar) {
     const faltam = semValor().length;
     aviso.textContent = faltam === 1 ? "1 produto marcado como 'temos' está sem valor" : `${faltam} produtos marcados como 'temos' estão sem valor`;
     aviso.hidden = faltam === 0;
+    notaCarrinho.hidden = !linhas.some((it) => it.do_carrinho);
   }
 
   // Sugestões do campo Remédio (nomes já usados em receitas liberadas).
@@ -2278,6 +2311,7 @@ function editorColunas(d, minha, aoMudar) {
     // "Aplicado aqui": o remédio foi aplicado na clínica. Cobra (Temos = Sim, com valor), mas o tutor não compra.
     const chipAplicado = el('button', { type: 'button', class: 'chip-aplicado', role: 'switch', 'data-campo': 'aplicado' }, 'Aplicado aqui');
     const notaAplicado = el('p', { class: 'nota-aplicado' }, 'Foi aplicado na clínica: será cobrado e não vai na lista de compras do papel.');
+    const nota = el('p', { class: 'nota-aplicado nota-do-carrinho' }, '');
     const nao = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'nao' }, 'Não');
     const sim = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'sim' }, 'Sim');
     const qtd = el('input', { type: 'text', inputmode: 'numeric', class: 'produto-qtd', 'aria-label': 'Qtd (cobrança)', value: it.qtd, maxlength: 3, autocomplete: 'off' });
@@ -2286,12 +2320,15 @@ function editorColunas(d, minha, aoMudar) {
       nao.setAttribute('aria-checked', String(!it.temos));
       sim.setAttribute('aria-checked', String(it.temos));
       linha.classList.toggle('sim', it.temos);
-      detalhes.hidden = !it.temos;
+      detalhes.hidden = !it.temos || !!it.do_carrinho;
       chipAplicado.setAttribute('aria-checked', String(!!it.aplicado));
       linha.classList.toggle('aplicado', !!it.aplicado);
+      linha.classList.toggle('do-carrinho', !!it.do_carrinho);
       campoComprar.hidden = !!it.aplicado;
-      blocoTemos.hidden = !!it.aplicado;
+      blocoTemos.hidden = !!it.aplicado || !!it.do_carrinho;
       notaAplicado.hidden = !it.aplicado;
+      nota.hidden = !it.do_carrinho;
+      if (it.do_carrinho) nota.textContent = `Do carrinho: ${quantidadeDe(it)} × ${valorDe(it) !== null ? formatarReais(valorDe(it)) : '—'} · já está na conta (não cobra de novo).`;
       const q = lerQuantidade(it.qtd); const v = lerReais(it.valor);
       qtd.classList.toggle('invalido', q === null);
       valor.classList.toggle('invalido', it.valor.trim() !== '' && (v === null || v > MAX_VALOR_CENTAVOS));
@@ -2329,13 +2366,13 @@ function editorColunas(d, minha, aoMudar) {
     } }, icone('fechar', 18));
     const campoRot = (c, entrada, classe = '') => el('label', { class: 'rem-campo ' + classe }, ROTULOS_COLUNAS[c], entrada);
     linha.append(
-      el('div', { class: 'rem-topo' }, it.pilula, remover),
+      el('div', { class: 'rem-topo' }, it.pilula, it.do_carrinho ? el('span', { class: 'etiqueta carrinho-etiqueta' }, 'Do carrinho') : null, remover),
       el('div', { class: 'rem-grade' },
         el('div', { class: 'rem-campo rem-remedio' }, el('label', {}, ROTULOS_COLUNAS.remedio, rem.entrada), rem.chips),
         campoRot('dose', entradas.dose), campoRot('como', entradas.como, 'rem-como'), campoRot('intervalo', entradas.intervalo), campoRot('duracao', entradas.duracao),
         el('label', { class: 'rem-campo rem-via' }, 'Via', seletorVia, viaOutro),
         el('div', { class: 'rem-campo rem-aplicado' }, chipAplicado)),
-      notaAplicado,
+      notaAplicado, nota,
       el('div', { class: 'rem-pe' },
         campoComprar,
         blocoTemos,
@@ -2361,6 +2398,7 @@ function editorColunas(d, minha, aoMudar) {
   // ----- salvar os produtos (1 s depois da última mudança); o texto e as linhas a tela grava -----
   const corpoItens = () => ({ itens: preenchidas().map((it) => ({
     descricao: descricao(it), temos: it.temos, quantidade: it.temos ? quantidadeDe(it) : 1, valor_unitario_centavos: it.temos ? valorDe(it) : null,
+    ...(it.do_carrinho ? { do_carrinho: true } : {}), ...(it.catalogo_id ? { catalogo_id: it.catalogo_id } : {}),
   })) });
   let ultimoEnvio = JSON.stringify(corpoItens());
   let tempo = null; let salvando = null; let bloqueado = false;
@@ -2397,7 +2435,7 @@ function editorColunas(d, minha, aoMudar) {
   estado.textContent = itensSalvos.length ? 'Salvo' : '';
   return {
     caixa,
-    linhas: () => linhas.map((it) => ({ ...Object.fromEntries(CAMPOS_ENVIO.map((c) => [c, String(it[c] ?? '')])), aplicado: !!it.aplicado })),
+    linhas: () => linhas.map((it) => ({ ...Object.fromEntries(CAMPOS_ENVIO.map((c) => [c, String(it[c] ?? '')])), aplicado: !!it.aplicado, ...(it.do_carrinho ? { do_carrinho: true } : {}), ...(it.catalogo_id ? { catalogo_id: it.catalogo_id } : {}) })),
     texto: () => textoDasLinhas(linhas),
     aoMudarTexto() {},
     salvarAgora,
@@ -2436,9 +2474,12 @@ async function telaReceita(id, consulta = '') {
   let d;
   try { d = await api('GET', `/api/receitas/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
   if (minha !== versaoTela) return;
-  if (d.receita.status !== 'rascunho') { telaReceitaLeitura(d, minha); return; }
+  if (d.receita.status !== 'rascunho') { telaReceitaLeitura(d, minha, null, Number(new URLSearchParams(consulta).get('atend')) || null); return; }
   const r = d.receita;
   const ehVet = usuario.papel === 'veterinario';
+  // Vinda da tela da consulta (#/receita/5?atend=12): mostra "Voltar para a consulta" e volta para o passo da receita.
+  const atend = Number(new URLSearchParams(consulta).get('atend')) || null;
+  const sufixoAtend = atend ? `atend=${atend}` : '';
   // Padrão: remédios em colunas. Receita antiga (só texto) ou "Colar texto do WhatsApp": texto livre.
   const modoColunas = new URLSearchParams(consulta).get('modo') !== 'texto' && (r.linhas !== null || !r.texto.trim());
   const colunas = modoColunas ? editorColunas(d, minha, () => agendar()) : null;
@@ -2587,7 +2628,7 @@ async function telaReceita(id, consulta = '') {
     const nova = await api('POST', `/api/receitas/${id}/liberar`, {});
     bloqueada = true;
     if (colunas) colunas.parar();
-    telaReceitaLeitura(nova, minha, 'Receita liberada. A recepção foi avisada para imprimir.');
+    telaReceitaLeitura(nova, minha, 'Receita liberada. A recepção foi avisada para imprimir.', atend);
   };
 
   // Um toque: grava, libera para a impressão e abre o WhatsApp de quem pediu.
@@ -2599,7 +2640,7 @@ async function telaReceita(id, consulta = '') {
     const nova = await api('POST', `/api/receitas/${id}/liberar`, {});
     bloqueada = true;
     if (colunas) colunas.parar();
-    telaReceitaLeitura(nova, minha, `Receita liberada e enviada para a impressão. Abrindo o WhatsApp de ${nomeColega}…`);
+    telaReceitaLeitura(nova, minha, `Receita liberada e enviada para a impressão. Abrindo o WhatsApp de ${nomeColega}…`, atend);
     const msg = `Pronto, ${pediu.nome}! A receita do *${d.pet.nome}* já foi para a impressão na recepção: ${location.origin}/#/receita/${id}`;
     location.href = linkWhatsapp(pediu, msg); // jeito que funciona no iPhone, inclusive no app instalado
   };
@@ -2638,11 +2679,11 @@ async function telaReceita(id, consulta = '') {
       await salvarAgora();
       await colunas.salvarAgora();
       await api('PATCH', `/api/receitas/${id}`, { texto: colunas.texto(), linhas_json: null });
-      irPara(`#/receita/${id}?modo=texto`);
+      irPara(`#/receita/${id}?modo=texto${atend ? '&' + sufixoAtend : ''}`);
     } else {
       if (texto.value.trim()) throw new Error('As colunas só podem ser usadas em uma receita vazia. Apague o texto antes.');
       await salvarAgora();
-      irPara(`#/receita/${id}`);
+      irPara(`#/receita/${id}${atend ? '?' + sufixoAtend : ''}`);
     }
   }));
 
@@ -2656,12 +2697,14 @@ async function telaReceita(id, consulta = '') {
     clearTimeout(tempoSalvar);
     await produtos.salvarAgora();
     await api('POST', `/api/receitas/${id}/cancelar`, {});
-    irPara(`#/pet/${d.pet.id}`);
+    irPara(atend ? `#/consulta/${atend}?passo=receita` : `#/pet/${d.pet.id}`);
   }));
 
   mostrar(
     cabecalho(),
-    botaoVoltar(async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/pet/${d.pet.id}`); }, 'Ficha do pet'),
+    atend
+      ? botaoVoltar(async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/consulta/${atend}?passo=receita`); }, 'Voltar para a consulta')
+      : botaoVoltar(async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/pet/${d.pet.id}`); }, 'Ficha do pet'),
     el('h1', { class: 'titulo-receita' }, `Receita de ${d.pet.nome}`),
     estado,
     cabecaReceita(d),
@@ -2680,7 +2723,8 @@ async function telaReceita(id, consulta = '') {
     el('div', { class: 'botoes-receita' },
       ehVet ? [liberar, soLiberar] : el('p', { class: 'suave' }, 'Só o veterinário libera a receita. Envie para o veterinário liberar.'),
       previa, alternarModo,
-      pediu && ehVet ? null : pedir, cancelar));
+      pediu && ehVet ? null : pedir, cancelar,
+      atend ? el('button', { type: 'button', class: 'secundario largo', id: 'voltar-consulta', onclick: comAviso({ disabled: false }, async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/consulta/${atend}?passo=receita`); }) }, 'Voltar para a consulta') : null));
   if (colunas) raiz.classList.add('colunas');
   crescer(orient);
   if (!colunas) {
@@ -2691,7 +2735,7 @@ async function telaReceita(id, consulta = '') {
 }
 
 // Receita já liberada (ou impressa/entregue/cancelada): só leitura.
-function telaReceitaLeitura(d, minha, mensagem = null) {
+function telaReceitaLeitura(d, minha, mensagem = null, atend = null) {
   if (minha !== versaoTela) return;
   const r = d.receita;
   const podeCorrigir = PODE_ATENDER.includes(usuario.papel) && ['liberada', 'impressa', 'entregue'].includes(r.status);
@@ -2718,7 +2762,7 @@ function telaReceitaLeitura(d, minha, mensagem = null) {
     botoes.push(b);
   }
   mostrar(
-    cabecalho(), botaoVoltar(`#/pet/${d.pet.id}`, '← Ficha do pet'),
+    cabecalho(), atend ? botaoVoltar(`#/consulta/${atend}?passo=receita`, 'Voltar para a consulta') : botaoVoltar(`#/pet/${d.pet.id}`, '← Ficha do pet'),
     mensagem ? caixaMensagem('ok', mensagem) : null,
     cabecaReceita(d),
     d.veterinario ? el('p', { class: 'suave' }, `Assinada por ${comTratamento(d.veterinario.nome)}${d.veterinario.crmv ? ' — ' + rotuloCrmv(d.veterinario.crmv) : ''} · liberada ${formatarDataHora(r.liberada_em)}`) : null,
@@ -2727,7 +2771,7 @@ function telaReceitaLeitura(d, minha, mensagem = null) {
     el('div', { class: 'cartao' }, el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.texto)),
       r.orientacoes ? el('div', { class: 'folha-orientacoes' }, el('strong', {}, 'Orientações'), el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.orientacoes))) : null),
     produtos ? produtos.caixa : null,
-    area, el('div', { class: 'botoes-receita' }, botoes));
+    area, el('div', { class: 'botoes-receita' }, botoes, atend ? el('button', { type: 'button', class: 'secundario largo', id: 'voltar-consulta', onclick: () => irPara(`#/consulta/${atend}?passo=receita`) }, 'Voltar para a consulta') : null));
 }
 
 // ---------- Página de impressão ----------
@@ -2970,6 +3014,232 @@ function secaoDadosClinica() {
 }
 
 
+// ---------- Consulta (tela cheia do veterinário) ----------
+// Começa com "Iniciar consulta" e reúne tudo num lugar só: 1 Paciente · 2 Produtos (carrinho) · 3 Receita · 4 Conta.
+// A receita fica por último: usa os produtos do carrinho. Os produtos e a conta são a mesma tela da Conta, embutida aqui.
+const PASSOS_CONSULTA = [['paciente', '1', 'Paciente'], ['produtos', '2', 'Produtos'], ['receita', '3', 'Receita'], ['conta', '4', 'Conta']];
+
+async function telaConsulta(id, consulta = '') {
+  const minha = versaoTela;
+  if (!PODE_ATENDER.includes(usuario.papel)) { irPara('#/hoje'); return; } // só veterinário e suporte
+  carregando();
+  let d;
+  try { d = await api('GET', `/api/atendimentos/${id}/consulta`); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  const at0 = d.atendimento;
+  if (at0.status === 'cancelado') { telaErro(new Error('Esta chegada foi cancelada.')); return; }
+  if (at0.status === 'chegou') {
+    // Ainda aguardando: oferece iniciar a consulta aqui mesmo.
+    mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, at0.pet.nome),
+      el('div', { class: 'cartao aviso' }, el('p', {}, el('strong', {}, 'Este paciente ainda está aguardando.')),
+        el('button', { type: 'button', class: 'grande', id: 'iniciar-consulta', onclick: async (ev) => {
+          ev.currentTarget.disabled = true;
+          try { await api('POST', `/api/atendimentos/${id}/iniciar`); await telaConsulta(id, consulta); } catch (e) { telaErro(e); }
+        } }, 'Iniciar consulta')));
+    return;
+  }
+
+  const qs = new URLSearchParams(consulta);
+  let passo = PASSOS_CONSULTA.some(([k]) => k === qs.get('passo')) ? qs.get('passo') : 'paciente';
+  let ctlConta = null; // a conta embutida (passos Produtos e Conta)
+  let secao = null; // anotações da consulta (criada uma vez)
+  let notasCarregadas = false;
+  const cabeca = el('section', { class: 'consulta-cabeca', 'aria-label': 'Dados do paciente' });
+  const passos = el('nav', { class: 'consulta-passos', 'aria-label': 'Passos da consulta' });
+  const painel = el('div', { class: 'consulta-painel' });
+  const rodape = el('div', { class: 'consulta-rodape' });
+  const avisos = el('div');
+
+  const quantoMedico = () => (d.atendimento.veterinario ? comTratamento(d.atendimento.veterinario.nome) : '');
+
+  // ----- cabeça com tudo o que a recepção preencheu -----
+  function cabecaCompleta() {
+    const at = d.atendimento; const p = d.pet; const t = d.tutor;
+    const linhaPet = [ROTULO_ESPECIE[p.especie] || p.especie, p.raca ? `${p.raca}${p.raca_confirmada ? '' : ' (a confirmar)'}` : 'Raça não informada', ROTULO_SEXO[p.sexo] || 'Sexo não informado', formatarIdade(p)].filter(Boolean).join(' · ');
+    const peso = at.sem_peso
+      ? el('div', { class: 'peso-faltando' }, el('span', { class: 'selo-sem-peso' }, 'Sem peso'), el('button', { type: 'button', class: 'secundario adicionar-peso', onclick: () => adicionarPeso(at, recarregar) }, 'Adicionar peso'))
+      : el('strong', { class: 'consulta-peso-valor' }, formatarPeso(at.peso_kg));
+    const origemPeso = d.peso.origem === 'veterinario' ? 'pelo veterinário' : 'balança da recepção';
+    const tel = linkTelefoneDe(t.whatsapp);
+    const zap = linkWhatsappDe(t.whatsapp);
+    return [
+      el('div', { class: 'consulta-id' },
+        miniatura(p.foto_id || at.foto_id, p.nome, 'foto-consulta'),
+        el('div', { class: 'consulta-id-texto' },
+          el('h1', { class: 'consulta-nome' }, p.nome),
+          el('p', { class: 'consulta-linha-pet' }, linhaPet),
+          el('div', { class: 'consulta-selos' },
+            el('span', { class: 'pilula ' + (at.tipo === 'retorno' ? 'retorno' : 'tipo-consulta'), id: 'consulta-tipo' }, at.tipo === 'retorno' ? 'Retorno' : 'Consulta'),
+            at.urgente ? el('span', { class: 'selo-urgente sem-margem' }, 'URGENTE') : null,
+            at.para_veterinario ? paraPilula(at.para_veterinario) : null,
+            el('span', { class: 'pilula com-vet' }, `${quantoMedico() ? 'Com ' + quantoMedico() : 'Em atendimento'} desde ${formatarHora(at.iniciado_em)}`),
+            el('span', { class: 'pilula espera' }, `Chegou ${formatarHora(at.chegada_em)} · espera ${formatarEspera(esperaDe(at))}`)))),
+      el('div', { class: 'consulta-peso' }, el('span', { class: 'rotulo-mini' }, 'Peso'), peso,
+        at.sem_peso ? null : el('span', { class: 'detalhe' }, `pesado às ${formatarHora(d.peso.em)} · ${origemPeso}`)),
+      el('div', { class: 'consulta-motivo' }, el('span', { class: 'rotulo-mini' }, 'Motivo da vinda'), el('p', {}, at.motivo || 'Não informado')),
+      el('div', { class: 'consulta-tutor' }, el('span', { class: 'rotulo-mini' }, 'Tutor'), el('strong', {}, t.nome),
+        el('span', { class: 'consulta-fone' }, t.whatsapp ? formatarTelefone(t.whatsapp) : 'Sem telefone'),
+        tel || zap ? el('div', { class: 'consulta-contato' }, tel ? el('a', { class: 'botao-link', href: tel, id: 'ligar-tutor' }, 'Ligar') : null, zap ? el('a', { class: 'botao-link', href: zap, target: '_blank', rel: 'noopener', id: 'zap-tutor' }, 'WhatsApp') : null) : null),
+    ];
+  }
+  function cabecaCompacta() {
+    const at = d.atendimento; const p = d.pet;
+    return [el('div', { class: 'consulta-compacta' },
+      miniatura(p.foto_id || at.foto_id, p.nome),
+      el('strong', { class: 'compacta-nome' }, p.nome),
+      at.sem_peso ? el('span', { class: 'selo-sem-peso pequeno' }, 'Sem peso') : el('span', { class: 'peso-grande' }, formatarPeso(at.peso_kg)),
+      el('span', { class: 'pilula ' + (at.tipo === 'retorno' ? 'retorno' : 'tipo-consulta') }, at.tipo === 'retorno' ? 'Retorno' : 'Consulta'),
+      at.urgente ? el('span', { class: 'selo-urgente sem-margem' }, 'URGENTE') : null,
+      el('span', { class: 'suave compacta-tutor' }, `Tutor: ${d.tutor.nome}`),
+      el('button', { type: 'button', class: 'secundario pequeno', onclick: () => irPasso('paciente') }, 'Ver dados do paciente'))];
+  }
+
+  function desenharPassos() {
+    const info = {
+      receita: d.receita_desta_consulta && d.receita_desta_consulta.remedios ? `${d.receita_desta_consulta.remedios}` : '',
+      conta: d.pedido ? formatarReais(d.pedido.total_centavos) : '',
+    };
+    passos.replaceChildren(...PASSOS_CONSULTA.map(([k, n, rotulo]) => el('button', { type: 'button', class: 'passo-consulta', role: 'tab', 'aria-selected': String(k === passo), 'data-passo': k, onclick: () => irPasso(k) },
+      el('span', { class: 'passo-num' }, n), el('span', { class: 'passo-rotulo' }, rotulo), info[k] ? el('span', { class: 'passo-info' }, info[k]) : null)));
+  }
+
+  function desenharRodape() {
+    const at = d.atendimento;
+    if (at.status === 'finalizado') {
+      rodape.replaceChildren(el('div', { class: 'mensagem ok' }, `Consulta finalizada às ${formatarHora(at.finalizado_em)}.`), el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/hoje') }, 'Voltar para Hoje'));
+      return;
+    }
+    const b = el('button', { type: 'button', class: 'grande finalizar-consulta', id: 'finalizar-consulta' }, 'Finalizar consulta');
+    b.addEventListener('click', async () => {
+      avisos.replaceChildren();
+      b.disabled = true;
+      try {
+        if (ctlConta) await ctlConta.esvaziar();
+        const ped = await api('GET', `/api/atendimentos/${id}/pedido`);
+        const aviso = ped.pedido.rascunho || ped.pedido.status === 'aberto' ? 'A conta ainda não foi enviada para a recepção.' : null;
+        const ok = await confirmar(`Finalizar a consulta de ${d.pet.nome}?`, [aviso, 'Depois de finalizada, ela sai da lista de atendimentos em andamento.'].filter(Boolean), 'Sim, finalizar');
+        if (ok) { await api('POST', `/api/atendimentos/${id}/finalizar`); irPara('#/hoje'); return; }
+      } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); }
+      b.disabled = false;
+    });
+    rodape.replaceChildren(el('div', { class: 'consulta-rodape-botoes' }, b, el('button', { type: 'button', class: 'secundario', onclick: async () => { if (ctlConta) await ctlConta.esvaziar(); irPara('#/hoje'); } }, 'Voltar para Hoje')));
+  }
+
+  // ----- passo 1: Paciente -----
+  function painelPaciente() {
+    const partes = [];
+    if (d.internacao_atual) {
+      partes.push(el('div', { class: 'cartao aviso' }, el('p', {}, el('strong', {}, `Internado na ${d.internacao_atual.baia_nome}`), ` desde ${formatarDia(d.internacao_atual.inicio_em)} às ${formatarHora(d.internacao_atual.inicio_em)}`),
+        el('button', { type: 'button', onclick: () => irPara(`#/internacao/${d.internacao_atual.id}`) }, 'Abrir internação')));
+    }
+    if (d.pet.observacoes) partes.push(el('div', { class: 'cartao' }, el('span', { class: 'rotulo-mini' }, 'Observações do cadastro'), el('p', {}, d.pet.observacoes)));
+    const visitas = el('div', { class: 'cartao' }, el('h2', { class: 'sem-margem-topo' }, 'Últimas visitas'),
+      d.visitas_anteriores.length
+        ? el('ul', { class: 'lista-simples historico' }, d.visitas_anteriores.map((v) => el('li', {}, el('div', { class: 'hist-linha' },
+          el('strong', {}, formatarDia(v.chegada_em)),
+          v.peso_kg != null ? el('span', { class: 'hist-peso' }, formatarPeso(v.peso_kg)) : el('span', { class: 'selo-sem-peso pequeno' }, 'Sem peso'),
+          v.tipo === 'retorno' ? el('span', { class: 'pilula retorno' }, 'Retorno') : null),
+          v.motivo ? el('div', { class: 'suave' }, v.motivo) : null)))
+        : el('p', { class: 'suave' }, 'Primeira visita deste paciente no sistema.'),
+      el('button', { type: 'button', class: 'secundario pequeno', onclick: () => irPara(`#/pet/${d.pet.id}`) }, 'Abrir ficha completa'));
+    const receitas = el('div', { class: 'cartao' }, el('h2', { class: 'sem-margem-topo' }, 'Últimas receitas'),
+      d.receitas_recentes.length
+        ? el('ul', { class: 'lista-simples' }, d.receitas_recentes.map((r) => el('li', {}, el('button', { type: 'button', class: 'resultado receita-linha', onclick: () => irPara(`#/receita/${r.id}?atend=${id}`) },
+          el('div', { class: 'hist-linha' }, chipReceita(r.status), r.desta_consulta ? el('span', { class: 'etiqueta' }, 'desta consulta') : null, el('span', { class: 'suave' }, formatarDia(r.liberada_em || r.criado_em))),
+          r.previa ? el('div', {}, r.previa) : el('div', { class: 'suave' }, '(vazia)')))))
+        : el('p', { class: 'suave' }, 'Nenhuma receita anterior.'));
+    partes.push(el('div', { class: 'consulta-duas-colunas' }, visitas, receitas));
+    if (!secao) {
+      secao = secaoProntuario({
+        petId: d.pet.id, atendimento: { id, chegada_em: d.atendimento.chegada_em }, titulo: 'Anotações da consulta', mostrarLigacoes: false,
+        aoMudar: async () => { const r = await api('GET', `/api/pets/${d.pet.id}/prontuario`); secao.definirNotas(r.notas); },
+      });
+    }
+    partes.push(secao.raiz);
+    if (!notasCarregadas) {
+      notasCarregadas = true;
+      api('GET', `/api/pets/${d.pet.id}/prontuario`).then((r) => { if (minha === versaoTela) secao.definirNotas(r.notas); }).catch((e) => { notasCarregadas = false; if (minha === versaoTela) secao.raiz.append(caixaMensagem('erro', e.message)); });
+    }
+    partes.push(el('button', { type: 'button', class: 'grande proximo-passo', id: 'ir-produtos', onclick: () => irPasso('produtos') }, 'Próximo: Produtos →'));
+    return partes;
+  }
+
+  // ----- passo 3: Receita (monta com o carrinho) -----
+  function painelReceita() {
+    const caixa = el('div', { class: 'cartao consulta-receita' }, el('p', { class: 'carregando' }, 'Carregando…'));
+    (async () => {
+      try {
+        const [dados, ped] = await Promise.all([api('GET', `/api/atendimentos/${id}/consulta`), api('GET', `/api/atendimentos/${id}/pedido`)]);
+        if (minha !== versaoTela || passo !== 'receita') return;
+        d = dados;
+        desenharPassos();
+        const carrinho = ped.pedido.itens.filter((i) => i.origem === 'manual' && i.catalogo_id);
+        const rec = d.receita_desta_consulta;
+        const abrir = (rid) => irPara(`#/receita/${rid}?atend=${id}`);
+        const montar = el('button', { type: 'button', class: 'grande', id: 'montar-receita' }, rec && rec.status === 'rascunho' ? 'Atualizar com os produtos do carrinho' : 'Montar receita com os produtos do carrinho');
+        montar.addEventListener('click', async () => {
+          montar.disabled = true; avisos.replaceChildren();
+          try {
+            if (ctlConta) await ctlConta.esvaziar();
+            const r = await api('POST', `/api/atendimentos/${id}/receita-do-carrinho`);
+            abrir(r.receita.id);
+          } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); montar.disabled = false; }
+        });
+        montar.disabled = !carrinho.length;
+        const branco = el('button', { type: 'button', class: 'secundario', id: 'receita-em-branco' }, 'Escrever receita em branco');
+        branco.addEventListener('click', async () => {
+          branco.disabled = true; avisos.replaceChildren();
+          try { const r = await api('POST', '/api/receitas', { atendimento_id: id }); abrir(r.receita.id); } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); branco.disabled = false; }
+        });
+        const estadoRec = !rec ? el('p', { class: 'suave' }, 'Nenhuma receita criada para esta consulta ainda.')
+          : el('div', { class: 'mensagem ok' }, rec.status === 'rascunho' ? `Receita em rascunho com ${rec.remedios} ${rec.remedios === 1 ? 'remédio' : 'remédios'}.` : `Receita ${rec.status === 'liberada' ? 'liberada' : rec.status}.`,
+            ' ', el('button', { type: 'button', class: 'secundario pequeno', id: 'abrir-receita', onclick: () => abrir(rec.id) }, rec.status === 'rascunho' ? 'Continuar receita' : 'Ver receita'));
+        caixa.replaceChildren(
+          el('h2', { class: 'sem-margem-topo' }, 'Receita'),
+          el('p', { class: 'suave' }, 'A receita usa os produtos do carrinho: uma linha por produto, com o nome e a dose. Depois você escreve como dar, a cada quanto tempo e por quantos dias, e pode acrescentar remédios que não estão no carrinho.'),
+          carrinho.length
+            ? el('ul', { class: 'lista-simples carrinho-resumo' }, carrinho.map((i) => el('li', {}, el('strong', {}, `${i.quantidade} ×`), ` ${i.descricao}`)))
+            : el('p', { class: 'aviso-peso' }, 'O carrinho está vazio. Volte ao passo 2 (Produtos) para adicionar, ou escreva uma receita em branco.'),
+          estadoRec,
+          el('div', { class: 'consulta-acoes-receita' }, montar, branco));
+      } catch (e) { caixa.replaceChildren(caixaMensagem('erro', e.message)); }
+    })();
+    return [caixa];
+  }
+
+  // ----- trocar de passo -----
+  async function irPasso(novo) {
+    if (ctlConta) { try { await ctlConta.esvaziar(); } catch { /* o aviso já aparece na conta */ } ctlConta = null; }
+    avisos.replaceChildren();
+    passo = novo;
+    await desenhar();
+  }
+
+  async function desenhar() {
+    if (minha !== versaoTela) return;
+    cabeca.replaceChildren(...(passo === 'paciente' ? cabecaCompleta() : cabecaCompacta()));
+    cabeca.classList.toggle('compacta', passo !== 'paciente');
+    desenharPassos();
+    desenharRodape();
+    if (passo === 'paciente') { painel.replaceChildren(...painelPaciente()); return; }
+    if (passo === 'receita') { painel.replaceChildren(...painelReceita()); return; }
+    // Produtos e Conta: a mesma tela da conta, embutida.
+    const onde = el('div', { class: 'conta-embutida' }, el('p', { class: 'carregando' }, 'Carregando…'));
+    painel.replaceChildren(onde);
+    const ctl = await telaConta(id, '', { aba: passo === 'produtos' ? 'produtos' : 'conta', onde, irPara: (novo) => irPasso(novo) });
+    if (minha === versaoTela && passo !== 'receita' && passo !== 'paciente') ctlConta = ctl ?? null;
+  }
+
+  async function recarregar() {
+    try { d = await api('GET', `/api/atendimentos/${id}/consulta`); } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); return; }
+    await desenhar();
+  }
+
+  mostrar(cabecalho(), botaoVoltar(async () => { if (ctlConta) await ctlConta.esvaziar(); irPara('#/hoje'); }, 'Voltar para Hoje'), cabeca, passos, avisos, painel, rodape);
+  raiz.classList.add('larga');
+  await desenhar();
+}
+
 // ---------- Conta do atendimento (itens e pagamento) ----------
 const PODE_CANCELAR_CONTA = ['veterinario', 'suporte']; // (administradores também podem)
 
@@ -3191,10 +3461,13 @@ function dialogoAdicionarItem(aoAdicionar) {
   });
 }
 
-async function telaConta(atendimentoId, consulta = '') {
+// "embutido" (opcional) = a conta dentro da tela da consulta: { aba: 'produtos' | 'conta', onde: elemento, irPara(passo) }.
+// Embutida, ela não desenha cabeçalho nem abas (quem manda é a tela da consulta) e devolve { esvaziar } para
+// a consulta gravar os toques do carrinho antes de trocar de passo.
+async function telaConta(atendimentoId, consulta = '', embutido = null) {
   const minha = versaoTela;
   let abrirRecebimento = new URLSearchParams(consulta).get('receber') === '1';
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('p', { class: 'carregando' }, 'Carregando…'));
+  if (!embutido) mostrar(cabecalho(), botaoVoltar('#/hoje'), el('p', { class: 'carregando' }, 'Carregando…'));
   let d;
   let itens = [];
   let trocoAviso = null; // "Troco: R$ 50,00" logo depois de receber em dinheiro
@@ -3210,7 +3483,7 @@ async function telaConta(atendimentoId, consulta = '') {
 
   // ---- Aba "Adicionar produtos": toque num produto e ele entra na conta ----
   // As mudanças aparecem na hora (na tela) e são enviadas ao servidor em lote, meio segundo depois do último toque.
-  let aba = new URLSearchParams(consulta).get('aba') === 'produtos' ? 'produtos' : 'conta';
+  let aba = embutido ? embutido.aba : (new URLSearchParams(consulta).get('aba') === 'produtos' ? 'produtos' : 'conta');
   let catalogoProdutos = null; // itens do catálogo (sem a consulta), lidos uma vez
   let filtroCategoria = '';
   let filtroBusca = '';
@@ -3249,12 +3522,14 @@ async function telaConta(atendimentoId, consulta = '') {
     tempoCarrinho = setTimeout(esvaziarCarrinho, 500);
   }
   const trocarAba = async (nova) => {
+    if (embutido) { await esvaziarCarrinho(); embutido.irPara(nova === 'produtos' ? 'produtos' : 'conta'); return; }
     if (nova === aba) return;
     if (aba === 'produtos') await esvaziarCarrinho();
     aba = nova;
     desenhar();
   };
   function barraAbas() {
+    if (embutido) return null;
     const b = (chave, rotulo) => el('button', { type: 'button', class: 'aba', role: 'tab', 'aria-selected': String(aba === chave), 'data-aba': chave, onclick: () => trocarAba(chave) }, rotulo);
     return el('div', { class: 'abas-conta', role: 'tablist' }, b('conta', 'Conta'), b('produtos', 'Adicionar produtos'));
   }
@@ -3281,7 +3556,10 @@ async function telaConta(atendimentoId, consulta = '') {
       let tempo = null; let longo = false;
       const nome = el('span', { class: 'tile-nome' }, p.nome);
       const preco = el('strong', { class: 'tile-preco' }, formatarReais(p.preco_centavos));
-      const botao = el('button', { type: 'button', class: 'tile-botao', 'aria-label': `Adicionar ${p.nome}` }, nome, preco);
+      const restam = textoRestam(p); // "restam 7" ou "sem estoque" (vermelho; ainda dá para vender)
+      const botao = el('button', { type: 'button', class: 'tile-botao', 'aria-label': `Adicionar ${p.nome}` }, nome,
+        p.apresentacao ? el('span', { class: 'tile-apresentacao' }, p.apresentacao) : null, preco,
+        restam ? el('span', { class: 'tile-estoque ' + restam.classe }, restam.texto) : null);
       const qtd = el('span', { class: 'tile-qtd' });
       const menos = el('button', { type: 'button', class: 'tile-menos', 'aria-label': `Tirar um ${p.nome}` }, '−');
       const selo = el('div', { class: 'tile-selo', hidden: true }, menos, qtd);
@@ -3352,6 +3630,15 @@ async function telaConta(atendimentoId, consulta = '') {
   // O rascunho calculado só vira conta de verdade ao salvar.
   async function garantirSalva() { if (d.pedido.rascunho) await salvar(itens); return d.pedido.id; }
 
+  // Depois de enviar para a recepção: na tela da conta volta para Hoje; dentro da consulta fica aqui
+  // (o veterinário ainda precisa finalizar a consulta).
+  async function depoisDeEnviar() {
+    if (!embutido) { irPara('#/hoje'); return; }
+    aplicar(await api('GET', `/api/atendimentos/${atendimentoId}/pedido`));
+    mostrarToast('Conta enviada para a recepção');
+    desenhar();
+  }
+
   async function receber() {
     await agir(async () => {
       const id = await garantirSalva();
@@ -3364,7 +3651,7 @@ async function telaConta(atendimentoId, consulta = '') {
       if (!pagamento) return;
       if (pagamento.enviarRecepcao) {
         await api('POST', `/api/pedidos/${id}/enviar-recepcao`);
-        irPara('#/hoje');
+        await depoisDeEnviar();
         return;
       }
       const r = await api('POST', `/api/pedidos/${id}/pagamentos`, pagamento);
@@ -3591,7 +3878,7 @@ async function telaConta(atendimentoId, consulta = '') {
         botoes.push(el('button', { type: 'button', class: 'grande', id: 'enviar-recepcao', disabled: vazio, onclick: () => agir(async () => {
           const id = await garantirSalva();
           await api('POST', `/api/pedidos/${id}/enviar-recepcao`);
-          irPara('#/hoje');
+          await depoisDeEnviar();
         }) }, 'Enviar para a recepção'));
         botoes.push(el('button', { type: 'button', class: 'secundario bloco-botao', id: 'cobrar-aqui', disabled: vazio, onclick: receber }, 'Cobrar aqui'));
       } else {
@@ -3612,9 +3899,10 @@ async function telaConta(atendimentoId, consulta = '') {
       }
     }
 
-    if (aba === 'produtos') { corpo.replaceChildren(cartaoPaciente, barraAbas(), painelProdutos(editavel)); return; }
+    const cartaoDoPaciente = embutido ? null : cartaoPaciente;
+    if (aba === 'produtos') { corpo.replaceChildren(...[cartaoDoPaciente, barraAbas(), painelProdutos(editavel)].filter(Boolean)); return; }
     corpo.replaceChildren(...[
-      cartaoPaciente, barraAbas(), sucesso, cartaoPassoComprovante(),
+      cartaoDoPaciente, barraAbas(), sucesso, cartaoPassoComprovante(),
       el('div', { class: 'cartao' },
         el('h2', {}, 'Itens da conta'),
         itens.length ? el('ul', { class: 'conta-itens' }, itens.map((i) => linhaItem(i, editavel))) : el('p', { class: 'suave' }, 'Nenhum item ainda. Toque em "Adicionar item".'),
@@ -3627,7 +3915,7 @@ async function telaConta(atendimentoId, consulta = '') {
           : null),
       el('div', { class: 'conta-botoes' }, botoes),
       listaPagamentos(p),
-      p.status === 'pago' ? el('button', { type: 'button', class: 'secundario bloco', onclick: () => irPara('#/hoje') }, 'Voltar para Hoje') : null,
+      p.status === 'pago' && !embutido ? el('button', { type: 'button', class: 'secundario bloco', onclick: () => irPara('#/hoje') }, 'Voltar para Hoje') : null,
     ].filter(Boolean));
 
     if (abrirRecebimento && editavel) { abrirRecebimento = false; receber(); }
@@ -3635,13 +3923,24 @@ async function telaConta(atendimentoId, consulta = '') {
 
   try {
     aplicar(await api('GET', `/api/atendimentos/${atendimentoId}/pedido`));
-  } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  } catch (e) {
+    if (minha !== versaoTela) return;
+    if (embutido) { embutido.onde.replaceChildren(caixaMensagem('erro', e.message)); return { esvaziar: async () => {} }; }
+    telaErro(e); return;
+  }
   if (minha !== versaoTela) return;
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Conta'), erro, corpo);
+  if (embutido) embutido.onde.replaceChildren(erro, corpo);
+  else mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Conta'), erro, corpo);
   desenhar();
+  return { esvaziar: esvaziarCarrinho };
 }
 
 // ---------- Preços (catálogo) ----------
+// Duas abas lado a lado: Preços | Estoque.
+function abasPrecosEstoque(ativa) {
+  const b = (chave, rotulo, destino) => el('button', { type: 'button', class: 'aba', role: 'tab', 'aria-selected': String(ativa === chave), 'data-aba': chave, onclick: () => { if (ativa !== chave) irPara(destino); } }, rotulo);
+  return el('div', { class: 'abas-conta abas-precos', role: 'tablist' }, b('precos', 'Preços', '#/precos'), b('estoque', 'Estoque', '#/estoque'));
+}
 const ORDEM_CATEGORIAS = ['consulta', 'exame', 'vacina', 'procedimento', 'produto', 'outro'];
 
 // Janela para criar ou editar um item do catálogo. "item" = null para um novo.
@@ -3652,13 +3951,25 @@ function dialogoItemCatalogo(item, aoSalvar) {
     const preco = el('input', { id: 'cat-preco', type: 'text', inputmode: 'decimal', autocomplete: 'off', value: item ? reaisParaCampo(item.preco_centavos) : '', placeholder: 'ex.: 90,00' });
     const cat = el('select', { id: 'cat-categoria' }, ORDEM_CATEGORIAS.map((c) => el('option', { value: c }, ROTULO_CATEGORIA[c])));
     cat.value = item ? item.categoria : 'produto';
-    if (item && item.categoria === 'consulta') cat.disabled = true; // as consultas são usadas pela regra do horário
+    const fixo = !!(item && item.papel_fixo); // consulta até/após o corte e retorno: usados pela conta sozinha
+    if (fixo) cat.disabled = true;
+    const apresentacao = el('input', { id: 'cat-apresentacao', type: 'text', maxlength: 120, autocomplete: 'off', value: item?.apresentacao ?? '', placeholder: 'ex.: 250 mg · caixa com 10 comprimidos' });
+    const unidade = el('select', { id: 'cat-unidade' }, UNIDADES.map(([v, nomeU]) => el('option', { value: v }, `${v} (${nomeU})`)));
+    unidade.value = item?.unidade || 'un';
+    const estoque = el('input', { type: 'checkbox', id: 'cat-estoque' });
+    estoque.checked = !!(item && item.controla_estoque);
+    const blocoEstoque = el('div', { class: 'bloco-estoque-campos' },
+      el('label', { for: 'cat-apresentacao' }, 'Apresentação (opcional)'), apresentacao,
+      el('label', { for: 'cat-unidade' }, 'Unidade do estoque'), unidade,
+      el('label', { class: 'linha', for: 'cat-estoque' }, estoque, 'Controlar estoque deste item'),
+      el('p', { class: 'suave' }, 'Com o controle ligado, a quantidade baixa sozinha quando a conta é paga e a recepção/veterinário dão entrada na tela Estoque.'));
+    blocoEstoque.hidden = fixo;
     const ok = el('button', { type: 'button', id: 'cat-salvar' }, item ? 'Salvar' : 'Criar item');
     const d = el('dialog', { class: 'confirmacao dialogo-rolagem' },
       el('h2', {}, item ? 'Editar item' : 'Novo item'),
       el('label', { for: 'cat-nome' }, 'Nome'), nome,
       el('label', { for: 'cat-categoria' }, 'Categoria'), cat,
-      el('label', { for: 'cat-preco' }, 'Preço (R$)'), preco, area,
+      el('label', { for: 'cat-preco' }, 'Preço (R$)'), preco, blocoEstoque, area,
       el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'cat-voltar' }, 'Voltar')));
     const fechar = (v) => { d.close(); d.remove(); resolve(v); };
     ok.addEventListener('click', async () => {
@@ -3668,7 +3979,7 @@ function dialogoItemCatalogo(item, aoSalvar) {
         const centavos = lerReais(preco.value);
         if (!nome.value.trim()) throw new Error('Escreva o nome do item.');
         if (centavos === null || centavos > MAX_VALOR_CENTAVOS) throw new Error('Informe o preço. Exemplo: 90,00');
-        await aoSalvar({ nome: nome.value.trim(), categoria: cat.value, preco_centavos: centavos });
+        await aoSalvar({ nome: nome.value.trim(), categoria: cat.value, preco_centavos: centavos, ...(fixo ? {} : { apresentacao: apresentacao.value.trim() || null, unidade: unidade.value, controla_estoque: estoque.checked }) });
         fechar(true);
       } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
     });
@@ -3709,14 +4020,16 @@ async function telaPrecos() {
     return el('div', { class: 'preco-linha' + (c.ativo ? '' : ' inativo') },
       el('div', { class: 'preco-info' },
         el('strong', {}, c.nome, c.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Desativado')),
-        c.categoria === 'consulta' ? el('span', { class: 'detalhe' }, usuario.admin ? 'Usado na conta pelo horário da consulta' : 'Usado na conta pelo horário da consulta · só administradores mudam este valor') : null),
+        c.apresentacao ? el('span', { class: 'detalhe' }, c.apresentacao) : null,
+        c.controla_estoque ? el('span', { class: 'detalhe' }, `Controla estoque · ${(c.estoque_total ?? 0) > 0 ? 'restam ' + formatarQuantidade(c.estoque_total) + ' ' + c.unidade : 'sem estoque'}`) : null,
+        c.papel_fixo ? el('span', { class: 'detalhe' }, [c.papel_fixo === 'retorno' ? 'Usado na conta quando a visita é um retorno' : 'Usado na conta pelo horário da consulta', usuario.admin ? '' : ' · só administradores mudam este valor'].join('')) : null),
       el('strong', { class: 'preco-valor' }, formatarReais(c.preco_centavos)),
       el('div', { class: 'preco-botoes' },
         // Valor das consultas: só administradores editam (decisão da clínica).
-        c.categoria === 'consulta' && !usuario.admin ? null : el('button', { type: 'button', class: 'secundario editar-preco', onclick: async () => {
+        c.papel_fixo && !usuario.admin ? null : el('button', { type: 'button', class: 'secundario editar-preco', onclick: async () => {
           if (await dialogoItemCatalogo(c, (v) => api('PATCH', `/api/catalogo/${c.id}`, v))) carregar();
         } }, 'Editar'),
-        c.categoria === 'consulta' ? null : el('button', { type: 'button', class: 'secundario', onclick: async () => {
+        c.papel_fixo ? null : el('button', { type: 'button', class: 'secundario', onclick: async () => {
           avisos.replaceChildren();
           try { await api('PATCH', `/api/catalogo/${c.id}`, { ativo: !c.ativo }); carregar(); } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); }
         } }, c.ativo ? 'Desativar' : 'Ativar')));
@@ -3731,7 +4044,7 @@ async function telaPrecos() {
   }
   busca.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(carregar, 250); });
 
-  mostrar(cabecalho(), botaoVoltar('#/hoje'),
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), abasPrecosEstoque('precos'),
     el('div', { class: 'precos-topo' },
       el('h1', {}, 'Preços'),
       el('button', { type: 'button', class: 'grande', id: 'novo-item', onclick: async () => {
@@ -3740,6 +4053,207 @@ async function telaPrecos() {
     busca, el('div', { class: 'chips-filtro', role: 'group', 'aria-label': 'Categoria' }, chips),
     el('label', { class: 'linha', for: 'preco-inativos' }, inativos, 'Mostrar itens desativados'),
     avisos, lista);
+  carregar();
+}
+
+// ---------- Estoque ----------
+// Recepção, veterinário e suporte dão entrada (lote com quantidade + validade) e ajustam. A baixa é automática ao pagar.
+const ROTULO_MOVIMENTO = { entrada: 'Entrada', saida: 'Saída (venda)', ajuste: 'Ajuste', estorno: 'Devolução (conta reaberta)' };
+
+// Janela com campos, um botão de confirmar e "Voltar". "aoConfirmar()" lança erro com texto para mostrar na janela.
+function dialogoComCampos({ titulo, intro = null, corpo, rotuloOk, aoConfirmar, idOk = 'dialogo-ok' }) {
+  return new Promise((resolve) => {
+    const area = el('div');
+    const ok = el('button', { type: 'button', id: idOk }, rotuloOk);
+    const voltar = el('button', { type: 'button', class: 'secundario', id: 'dialogo-voltar' }, 'Voltar');
+    const d = el('dialog', { class: 'confirmacao dialogo-rolagem' }, el('h2', {}, titulo), intro ? el('p', { class: 'suave' }, intro) : null, ...corpo, area, el('div', { class: 'acoes' }, ok, voltar));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    ok.addEventListener('click', async () => {
+      area.replaceChildren();
+      ok.disabled = true;
+      try { await aoConfirmar(); fechar(true); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    voltar.addEventListener('click', () => fechar(false));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
+    document.body.append(d);
+    d.showModal();
+    const primeiro = d.querySelector('input, select, textarea');
+    if (primeiro) primeiro.focus();
+  });
+}
+
+// "+ Entrada": chegou produto novo (um lote, com a validade dele).
+function dialogoEntradaEstoque(item) {
+  const qtd = el('input', { id: 'est-qtd', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'ex.: 10' });
+  const validade = el('input', { id: 'est-validade', type: 'date' });
+  const custo = el('input', { id: 'est-custo', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'ex.: 12,50' });
+  const obs = el('input', { id: 'est-obs', type: 'text', maxlength: 200, autocomplete: 'off', placeholder: 'ex.: nota fiscal 123' });
+  return dialogoComCampos({
+    titulo: `Entrada de ${item.nome}`, intro: item.apresentacao || null, rotuloOk: 'Registrar entrada', idOk: 'est-salvar',
+    corpo: [
+      el('label', { for: 'est-qtd' }, `Quantidade (${item.unidade})`), qtd,
+      el('label', { for: 'est-validade' }, 'Validade'), validade,
+      el('p', { class: 'suave' }, 'Cada entrada é um lote com a própria validade. Sem validade? Deixe em branco.'),
+      el('label', { for: 'est-custo' }, 'Custo de cada unidade (R$, opcional)'), custo,
+      el('label', { for: 'est-obs' }, 'Observação (opcional)'), obs,
+    ],
+    aoConfirmar: async () => {
+      const q = lerQuantidadeDigitada(qtd.value);
+      if (q === null) throw new Error('Informe a quantidade (maior que zero). Exemplo: 10');
+      let c = null;
+      if (custo.value.trim()) { c = lerReais(custo.value); if (c === null || c > MAX_VALOR_CENTAVOS) throw new Error('Custo inválido. Exemplo: 12,50'); }
+      await api('POST', `/api/estoque/${item.id}/entradas`, { quantidade: q, validade: validade.value || null, custo_unitario_centavos: c, observacao: obs.value.trim() || null });
+    },
+  });
+}
+
+// "Ajustar": contagem nova, ou somar/tirar, sempre com motivo. "lote" (opcional) = ajusta só aquele lote.
+function dialogoAjusteEstoque(item, lote = null) {
+  let modo = 'nova';
+  const botoes = [['nova', 'Nova quantidade'], ['somar', 'Somar'], ['tirar', 'Tirar']].map(([v, rotulo]) => {
+    const b = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-modo': v }, rotulo);
+    b.addEventListener('click', () => { modo = v; marcar(); });
+    return [v, b];
+  });
+  const qtd = el('input', { id: 'aj-qtd', type: 'text', inputmode: 'decimal', autocomplete: 'off' });
+  const motivo = el('input', { id: 'aj-motivo', type: 'text', maxlength: 200, autocomplete: 'off', placeholder: 'ex.: contagem do inventário, frasco quebrou' });
+  const validade = el('input', { id: 'aj-validade', type: 'date' });
+  const blocoValidade = el('div', {}, el('label', { for: 'aj-validade' }, 'Validade do que foi somado (opcional)'), validade);
+  const rotuloQtd = el('label', { for: 'aj-qtd' }, '');
+  const atual = lote ? lote.quantidade_atual : item.total;
+  function marcar() {
+    for (const [v, b] of botoes) b.setAttribute('aria-checked', String(v === modo));
+    rotuloQtd.textContent = modo === 'nova' ? `Quantidade que existe agora (${item.unidade})` : (modo === 'somar' ? `Quanto somar (${item.unidade})` : `Quanto tirar (${item.unidade})`);
+    blocoValidade.hidden = !!lote || modo === 'tirar';
+  }
+  marcar();
+  return dialogoComCampos({
+    titulo: lote ? `Ajustar o lote de ${item.nome}` : `Ajustar ${item.nome}`, idOk: 'aj-salvar', rotuloOk: 'Salvar ajuste',
+    intro: `${lote ? 'Neste lote' : 'No estoque'} há ${formatarQuantidade(atual)} ${item.unidade}. Tirar usa primeiro o lote que vence antes.`,
+    corpo: [el('div', { class: 'grupo-opcoes', role: 'radiogroup', 'aria-label': 'Tipo de ajuste' }, botoes.map(([, b]) => b)), rotuloQtd, qtd, blocoValidade,
+      el('label', { for: 'aj-motivo' }, 'Motivo (obrigatório)'), motivo],
+    aoConfirmar: async () => {
+      // Na contagem ("nova quantidade") zero é válido: o estoque acabou.
+      const zero = modo === 'nova' && /^0([.,]0+)?$/.test(qtd.value.trim());
+      const valor = zero ? 0 : lerQuantidadeDigitada(qtd.value);
+      if (valor === null) throw new Error('Informe a quantidade. Exemplo: 5');
+      if (!motivo.value.trim()) throw new Error('Conte o motivo do ajuste.');
+      const corpo = { motivo: motivo.value.trim(), ...(lote ? { lote_id: lote.id } : {}), ...(modo === 'nova' ? { nova_quantidade: valor } : { delta: modo === 'tirar' ? -valor : valor }) };
+      if (!lote && modo !== 'tirar' && validade.value) corpo.validade = validade.value;
+      await api('POST', `/api/estoque/${item.id}/ajustes`, corpo);
+    },
+  });
+}
+
+async function telaEstoque() {
+  const minha = versaoTela;
+  let categoria = '';
+  let tempo = null;
+  const abertos = new Set(); // produtos com "Ver lotes" aberto
+  const lista = el('div', { class: 'carregando' }, 'Carregando…');
+  const avisos = el('div');
+  const resumo = el('div', { class: 'est-resumo' });
+  const busca = el('input', { id: 'estoque-busca', type: 'search', class: 'busca-grande', placeholder: 'Buscar produto (nome ou apresentação)', autocomplete: 'off' });
+  const cats = ORDEM_CATEGORIAS.filter((c) => c !== 'consulta');
+  const chips = ['', ...cats].map((c) => {
+    const b = el('button', { type: 'button', class: 'chip-filtro', 'aria-pressed': String(c === categoria), 'data-categoria': c }, c ? ROTULO_CATEGORIA[c] : 'Todos');
+    b.addEventListener('click', () => { categoria = c; for (const x of chips) x.setAttribute('aria-pressed', String(x === b)); carregar(); });
+    return b;
+  });
+
+  async function carregar() {
+    if (minha !== versaoTela) return;
+    try {
+      const qs = new URLSearchParams({ q: busca.value.trim(), categoria });
+      const r = await api('GET', '/api/estoque?' + qs);
+      if (minha !== versaoTela) return;
+      desenhar(r);
+    } catch (e) { if (minha === versaoTela) { lista.className = ''; lista.replaceChildren(caixaMensagem('erro', e.message)); } }
+  }
+
+  // Lotes e histórico de um produto (dentro da linha, ao tocar em "Ver lotes").
+  async function painelLotes(item, caixa) {
+    caixa.replaceChildren(el('p', { class: 'carregando' }, 'Carregando…'));
+    try {
+      const d = await api('GET', `/api/estoque/${item.id}`);
+      if (minha !== versaoTela) return;
+      const comProduto = d.lotes.filter((l) => l.quantidade_atual > 0);
+      const vazios = d.lotes.filter((l) => l.quantidade_atual <= 0);
+      const linhaLote = (l) => {
+        const v = textoValidade(l.dias_para_vencer);
+        return el('li', { class: 'lote-linha' },
+          el('div', { class: 'lote-info' },
+            el('strong', {}, l.validade ? `Validade ${formatarDataIso(l.validade)}` : 'Sem validade'),
+            l.validade ? el('span', { class: 'validade ' + v.classe }, v.texto) : null,
+            el('span', { class: 'detalhe' }, `Entrou ${formatarDia(l.criado_em)} · ${l.criado_por_nome}${l.custo_unitario_centavos != null ? ' · custo ' + formatarReais(l.custo_unitario_centavos) : ''}${l.observacao ? ' · ' + l.observacao : ''}`)),
+          el('span', { class: 'lote-qtd' }, `${formatarQuantidade(l.quantidade_atual)} de ${formatarQuantidade(l.quantidade_inicial)} ${item.unidade}`),
+          el('button', { type: 'button', class: 'secundario pequeno ajustar-lote', onclick: async () => { if (await dialogoAjusteEstoque({ ...item, total: d.item.total }, l)) carregar(); } }, 'Ajustar'));
+      };
+      caixa.replaceChildren(...[
+        el('h3', {}, 'Lotes com produto'),
+        comProduto.length ? el('ul', { class: 'lista-simples lotes' }, comProduto.map(linhaLote)) : el('p', { class: 'suave' }, 'Nenhum lote com produto.'),
+        vazios.length ? el('details', { class: 'lotes-vazios' }, el('summary', {}, `Lotes esvaziados (${vazios.length})`), el('ul', { class: 'lista-simples lotes' }, vazios.map(linhaLote))) : null,
+        el('h3', {}, 'Histórico'),
+        d.movimentos.length
+          ? el('ul', { class: 'lista-simples movimentos' }, d.movimentos.slice(0, 30).map((m) => el('li', { class: 'mov-linha' + (m.sem_estoque ? ' sem-estoque' : '') },
+            el('strong', { class: 'mov-qtd ' + (m.quantidade < 0 ? 'neg' : 'pos') }, `${m.quantidade > 0 ? '+' : ''}${formatarQuantidade(m.quantidade)} ${item.unidade}`),
+            el('span', {}, ROTULO_MOVIMENTO[m.tipo] || m.tipo, m.sem_estoque ? el('span', { class: 'etiqueta st-cancelada' }, 'sem estoque') : null, m.motivo && m.tipo !== 'saida' && m.tipo !== 'estorno' ? ` · ${m.motivo}` : ''),
+            el('span', { class: 'detalhe' }, `${formatarDia(m.criado_em)} ${formatarHora(m.criado_em)}${m.usuario_nome ? ' · ' + m.usuario_nome : ''}${m.lote_validade ? ' · lote ' + formatarDataIso(m.lote_validade) : ''}`))))
+          : el('p', { class: 'suave' }, 'Nada registrado ainda.')].filter(Boolean));
+    } catch (e) { caixa.replaceChildren(caixaMensagem('erro', e.message)); }
+  }
+
+  function linha(it) {
+    const v = textoValidade(it.dias_para_vencer);
+    const dura = textoDura(it);
+    const media = textoMedia(it);
+    const caixaLotes = el('div', { class: 'est-lotes' });
+    const verLotes = el('button', { type: 'button', class: 'secundario ver-lotes', 'aria-expanded': String(abertos.has(it.id)) }, abertos.has(it.id) ? 'Esconder lotes' : 'Ver lotes');
+    caixaLotes.hidden = !abertos.has(it.id);
+    if (abertos.has(it.id)) painelLotes(it, caixaLotes);
+    verLotes.addEventListener('click', () => {
+      if (abertos.has(it.id)) { abertos.delete(it.id); caixaLotes.hidden = true; verLotes.textContent = 'Ver lotes'; verLotes.setAttribute('aria-expanded', 'false'); return; }
+      abertos.add(it.id); caixaLotes.hidden = false; verLotes.textContent = 'Esconder lotes'; verLotes.setAttribute('aria-expanded', 'true');
+      painelLotes(it, caixaLotes);
+    });
+    return el('article', { class: 'cartao est-item', 'data-produto': String(it.id) },
+      el('div', { class: 'est-linha' },
+        el('div', { class: 'est-nome' }, el('strong', {}, it.nome), it.apresentacao ? el('span', { class: 'detalhe' }, it.apresentacao) : null, el('span', { class: 'detalhe' }, ROTULO_CATEGORIA[it.categoria])),
+        el('div', { class: 'est-qtd-bloco' }, el('strong', { class: 'est-total' + (it.total <= 0 ? ' zerado' : '') }, formatarQuantidade(it.total)), el('span', { class: 'detalhe' }, it.unidade),
+          it.total <= 0 ? el('span', { class: 'validade vencido' }, 'sem estoque') : null),
+        el('div', { class: 'est-validade-bloco' },
+          it.dias_para_vencer === null ? el('span', { class: 'validade sem' }, it.total > 0 ? 'sem validade' : '—')
+            : el('span', { class: 'validade ' + v.classe }, v.texto),
+          it.proxima_validade ? el('span', { class: 'detalhe' }, `próxima: ${formatarDataIso(it.proxima_validade)}`) : null,
+          media ? el('span', { class: 'detalhe media-validade' }, media) : null,
+          it.vencidos > 0 ? el('span', { class: 'validade vencido' }, `${formatarQuantidade(it.vencidos)} ${it.unidade} vencidos`) : null),
+        el('div', { class: 'est-dura-bloco' },
+          dura ? el('span', { class: 'est-dura' }, dura.startsWith('dura') ? dura.replace('dura cerca de', 'dura ~').replace('dura menos de', 'dura < ') : dura) : null,
+          it.sem_estoque_qtd > 0 ? el('span', { class: 'detalhe falta-estoque' }, `vendido sem estoque: ${formatarQuantidade(it.sem_estoque_qtd)}`) : null),
+        el('div', { class: 'est-botoes' },
+          el('button', { type: 'button', class: 'mais-entrada', onclick: async () => { if (await dialogoEntradaEstoque(it)) carregar(); } }, '+ Entrada'),
+          el('button', { type: 'button', class: 'secundario ajustar', onclick: async () => { if (await dialogoAjusteEstoque(it)) carregar(); } }, 'Ajustar'),
+          verLotes)),
+      caixaLotes);
+  }
+
+  function desenhar(r) {
+    const partes = [];
+    if (r.resumo.vencendo_em_30_dias) partes.push(el('span', { class: 'validade perto' }, `${r.resumo.vencendo_em_30_dias} vencendo em até 30 dias`));
+    if (r.resumo.com_vencidos) partes.push(el('span', { class: 'validade vencido' }, `${r.resumo.com_vencidos} com lote vencido`));
+    if (r.resumo.sem_estoque) partes.push(el('span', { class: 'validade vencido' }, `${r.resumo.sem_estoque} sem estoque`));
+    resumo.replaceChildren(...partes);
+    lista.className = 'lista-estoque';
+    lista.replaceChildren(...(r.itens.length ? r.itens.map(linha)
+      : [el('div', { class: 'cartao vazio' }, el('p', {}, 'Nenhum produto com controle de estoque.'), el('p', { class: 'suave' }, 'Em Preços, edite o produto e ligue "Controlar estoque deste item".'), el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/precos') }, 'Ir para Preços'))]));
+  }
+  busca.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(carregar, 250); });
+
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), abasPrecosEstoque('estoque'),
+    el('h1', {}, 'Estoque'),
+    el('p', { class: 'suave' }, 'Entradas com validade, baixa automática quando a conta é paga (sai primeiro o lote que vence antes).'),
+    busca, el('div', { class: 'chips-filtro', role: 'group', 'aria-label': 'Categoria' }, chips), resumo, avisos, lista);
+  raiz.classList.add('larga');
   carregar();
 }
 
@@ -4326,14 +4840,16 @@ function rotear() {
     if (qs.get('modo') === 'chegada') return irPara('#/chegada/nova'); // endereço antigo
     return telaBusca(qs.get('q') || '');
   }
-  if (rota === 'chegada') return telaChegadaNova(n || null); // #/chegada/nova ou #/chegada/<id do pet>
+  if (rota === 'chegada') return telaChegadaNova(n || null, consulta); // #/chegada/nova ou #/chegada/<id do pet>
   if (rota === 'atendimento' && n && acao === 'editar') return telaEditarAtendimento(n);
   if (rota === 'receita' && n) return acao === 'imprimir' ? telaImprimirReceita(n) : telaReceita(n, consulta);
   if (rota === 'receitas' && partes[1] === 'imprimir') return telaReceitasImprimir();
   if (rota === 'receitas' && partes[1] === 'transcrever') return telaTranscrever(consulta);
   if (rota === 'cadastro') return irPara('#/chegada/nova'); // endereço antigo do cadastro rápido
   if (rota === 'conta' && n) return telaConta(n, consulta);
+  if (rota === 'consulta' && n) return telaConsulta(n, consulta);
   if (rota === 'precos') return telaPrecos();
+  if (rota === 'estoque') return telaEstoque();
   if (rota === 'caixa') return usuario.admin ? telaCaixa() : telaHoje();
   if (rota === 'notificacoes') return telaNotificacoes();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();

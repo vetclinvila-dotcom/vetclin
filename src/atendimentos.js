@@ -2,13 +2,14 @@
 // O atendimento é por ordem de chegada (sem hora marcada).
 import { exigirLogin, exigirPapel } from './auth.js';
 import { notificar } from './notificacoes.js';
-import { PRODUTOS_DO_ATENDIMENTO, listaAguardandoPagamento, resumosDePedidos } from './pedidos.js';
+import { PRODUTOS_DO_ATENDIMENTO, listaAguardandoPagamento, prepararTrocaDeTipo, resumosDePedidos } from './pedidos.js';
 import { ErroHttp, agoraISO, finalTelefone, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
 
 const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem pode finalizar
 const PAPEIS_INICIAR = ['veterinario', 'suporte', 'recepcao']; // quem pode marcar que o paciente entrou no consultório
 const ABERTOS = ['chegou', 'em_atendimento'];
 const MSG_PESO = 'Informe o peso ou escolha "Pesar depois".';
+const TIPOS_VISITA = ['consulta', 'retorno'];
 const MSG_FAIXA_PESO = 'O peso deve estar entre 0,01 e 150 kg.';
 
 // ---------- validações (também usadas pelo cadastro rápido) ----------
@@ -63,7 +64,14 @@ export async function exigirVeterinarioAtivo(env, id) {
   if (!v) throw new ErroHttp(400, 'Escolha um veterinário ativo para "Para quem?".');
 }
 
-// Lê os dados da chegada: { peso_kg, pesar_depois, motivo, urgente, foto_id, para_veterinario_id }.
+// Tipo da visita: 'consulta' (padrão) ou 'retorno' (paciente que volta, mesmo que ainda não esteja no sistema).
+export function lerTipoVisita(valor) {
+  if (valor === undefined || valor === null || valor === '') return 'consulta';
+  if (!TIPOS_VISITA.includes(valor)) throw new ErroHttp(400, 'Escolha o tipo da visita: consulta ou retorno.');
+  return valor;
+}
+
+// Lê os dados da chegada: { peso_kg, pesar_depois, motivo, urgente, foto_id, para_veterinario_id, tipo }.
 export function lerChegada(c, usuario) {
   if (c === null || typeof c !== 'object' || Array.isArray(c)) throw new ErroHttp(400, 'Dados da chegada inválidos.');
   const peso = lerPeso(c.peso_kg);
@@ -75,6 +83,7 @@ export function lerChegada(c, usuario) {
     urgente: booleano(c.urgente),
     fotoId: fotoIdOpcional(c.foto_id),
     paraVetId: lerParaVeterinario(c.para_veterinario_id),
+    tipo: lerTipoVisita(c.tipo),
   };
 }
 
@@ -84,11 +93,11 @@ export function lerChegada(c, usuario) {
 // no mesmo batch, pelo código (P-000001).
 export function comandoInserirAtendimento(env, { petId, petCodigo, a, usuarioId, agora }) {
   return env.DB.prepare(
-    `INSERT INTO atendimentos (pet_id, chegada_em, peso_kg, peso_origem, peso_registrado_por, motivo, urgente, foto_id,
-                               para_veterinario_id, status, registrado_por, criado_em, atualizado_em)
-     VALUES (${petId ? '?' : '(SELECT id FROM pets WHERE codigo = ?)'}, ?, ?, ?, ?, ?, ?, ?, ?, 'chegou', ?, ?, ?)`
-  ).bind(petId ?? petCodigo, agora, a.peso, a.pesoOrigem, a.peso === null ? null : usuarioId, a.motivo, a.urgente ? 1 : 0, a.fotoId, a.paraVetId ?? null,
-    usuarioId, agora, agora);
+    `INSERT INTO atendimentos (pet_id, chegada_em, peso_kg, peso_origem, peso_registrado_por, peso_em, motivo, urgente, foto_id,
+                               para_veterinario_id, tipo, status, registrado_por, criado_em, atualizado_em)
+     VALUES (${petId ? '?' : '(SELECT id FROM pets WHERE codigo = ?)'}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'chegou', ?, ?, ?)`
+  ).bind(petId ?? petCodigo, agora, a.peso, a.pesoOrigem, a.peso === null ? null : usuarioId, a.peso === null ? null : agora, a.motivo, a.urgente ? 1 : 0, a.fotoId, a.paraVetId ?? null,
+    a.tipo ?? 'consulta', usuarioId, agora, agora);
 }
 
 // A foto da chegada vira a foto do perfil do pet, se ele ainda não tiver uma.
@@ -110,7 +119,7 @@ function comandoLimparFoto(env, fotoId) {
 export async function registrarChegada(env, { usuarioId, atendimentoId, petId, a, ip, via = null }) {
   await registrarAcao(env, {
     usuarioId, acao: 'criar_atendimento', entidade: 'atendimentos', entidadeId: atendimentoId,
-    depois: { pet_id: petId, peso_kg: a.peso, peso_origem: a.pesoOrigem, motivo: a.motivo, urgente: a.urgente, foto_id: a.fotoId, para_veterinario_id: a.paraVetId ?? null, ...(via ? { via } : {}) },
+    depois: { pet_id: petId, peso_kg: a.peso, peso_origem: a.pesoOrigem, motivo: a.motivo, urgente: a.urgente, foto_id: a.fotoId, para_veterinario_id: a.paraVetId ?? null, tipo: a.tipo ?? 'consulta', ...(via ? { via } : {}) },
     ip,
   });
   await avisarChegada(env, atendimentoId, usuarioId);
@@ -123,9 +132,10 @@ const NOME_ESPECIE = { cao: 'cão', gato: 'gato', outro: 'outro' };
 export function textoAvisoChegada(item) {
   const pet = item.pet;
   const especie = NOME_ESPECIE[pet.especie] || pet.especie || '';
+  const retorno = item.tipo === 'retorno';
   const peso = item.sem_peso ? 'Sem peso' : `${String(item.peso_kg).replace('.', ',')} kg`;
   return {
-    titulo: `${item.para_veterinario ? 'Para você — ' : ''}${item.urgente ? 'URGENTE: ' : 'Chegou: '}${pet.nome}${especie ? ` (${especie})` : ''}`,
+    titulo: `${item.para_veterinario ? 'Para você — ' : ''}${item.urgente ? (retorno ? 'URGENTE (retorno): ' : 'URGENTE: ') : (retorno ? 'Chegou (retorno): ' : 'Chegou: ')}${pet.nome}${especie ? ` (${especie})` : ''}`,
     corpo: [peso, item.motivo, item.tutor?.nome ? `tutor ${item.tutor.nome}` : ''].filter(Boolean).join(' · '),
   };
 }
@@ -167,7 +177,7 @@ function itemAtendimento(a, agoraMs) {
     id: a.id, status: a.status, chegada_em: a.chegada_em, iniciado_em: a.iniciado_em ?? null, finalizado_em: a.finalizado_em ?? null,
     espera_min: esperaMinutos(a, agoraMs),
     peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
-    motivo: a.motivo ?? '', urgente: a.urgente === 1, foto_id: a.foto_id ?? null,
+    motivo: a.motivo ?? '', urgente: a.urgente === 1, foto_id: a.foto_id ?? null, tipo: a.tipo ?? 'consulta', peso_em: a.peso_em ?? null,
     produtos_centavos: a.produtos_centavos ?? 0, produtos_sem_valor: a.produtos_sem_valor ?? 0,
     cancelado_em: a.cancelado_em ?? null, motivo_cancelamento: a.motivo_cancelamento ?? null,
     para_veterinario: a.para_veterinario_id ? { id: a.para_veterinario_id, nome: a.para_vet_nome } : null,
@@ -191,7 +201,7 @@ async function atendimentoBruto(env, id) {
   return a;
 }
 
-const resumoAtendimento = (a) => ({ peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, motivo: a.motivo ?? null, urgente: a.urgente === 1, foto_id: a.foto_id ?? null, para_veterinario_id: a.para_veterinario_id ?? null });
+const resumoAtendimento = (a) => ({ tipo: a.tipo ?? 'consulta', peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, motivo: a.motivo ?? null, urgente: a.urgente === 1, foto_id: a.foto_id ?? null, para_veterinario_id: a.para_veterinario_id ?? null });
 
 // ---------- rotas ----------
 async function atendimentosCriar(request, env) {
@@ -259,8 +269,10 @@ async function atendimentosAlterar(request, env, id) {
       novo.peso_kg = peso;
       novo.peso_origem = origemDoPeso(u);
       novo.peso_registrado_por = u.id;
+      novo.peso_em = agoraISO();
     }
   }
+  if (c.tipo !== undefined) novo.tipo = lerTipoVisita(c.tipo);
   if (c.motivo !== undefined) novo.motivo = texto(c.motivo, 'motivo', { max: 200 });
   if (c.urgente !== undefined) novo.urgente = booleano(c.urgente) ? 1 : 0;
   if (c.foto_id !== undefined) {
@@ -268,13 +280,19 @@ async function atendimentosAlterar(request, env, id) {
     if (novo.foto_id && novo.foto_id !== antes.foto_id) await exigirFoto(env, novo.foto_id);
   }
 
+  // Mudar consulta <-> retorno: só enquanto a conta não foi paga. A conta troca o item da consulta sozinha.
+  const tipoMudou = novo.tipo !== antes.tipo;
+  let trocaConta = null;
+  if (tipoMudou) trocaConta = await prepararTrocaDeTipo(env, id, novo.tipo, antes);
+
   const agora = agoraISO();
   const fotoMudou = novo.foto_id !== antes.foto_id;
   const comandos = [
-    env.DB.prepare(`UPDATE atendimentos SET peso_kg = ?, peso_origem = ?, peso_registrado_por = ?, motivo = ?, urgente = ?, foto_id = ?, para_veterinario_id = ?, atualizado_em = ?
+    env.DB.prepare(`UPDATE atendimentos SET peso_kg = ?, peso_origem = ?, peso_registrado_por = ?, peso_em = ?, motivo = ?, urgente = ?, foto_id = ?, para_veterinario_id = ?, tipo = ?, atualizado_em = ?
                      WHERE id = ? AND status IN ('chegou','em_atendimento')`)
-      .bind(novo.peso_kg, novo.peso_origem, novo.peso_registrado_por, novo.motivo, novo.urgente, novo.foto_id, novo.para_veterinario_id ?? null, agora, id),
+      .bind(novo.peso_kg, novo.peso_origem, novo.peso_registrado_por, novo.peso_em ?? null, novo.motivo, novo.urgente, novo.foto_id, novo.para_veterinario_id ?? null, novo.tipo ?? 'consulta', agora, id),
   ];
+  if (trocaConta) comandos.push(...trocaConta(agora));
   if (fotoMudou && novo.foto_id) comandos.push(comandoFotoDoPet(env, { petId: antes.pet_id, fotoId: novo.foto_id, agora }));
   if (fotoMudou && antes.foto_id) comandos.push(comandoLimparFoto(env, antes.foto_id));
   comandos.push(prepararAcao(env, { usuarioId: u.id, acao: 'alterar_atendimento', entidade: 'atendimentos', entidadeId: id, antes: resumoAtendimento(antes), depois: resumoAtendimento(novo), ip: ipDe(request) }));
@@ -356,6 +374,48 @@ const atendimentosCancelar = (request, env, id) => mudarStatus(request, env, id,
   },
 });
 
+// Tela cheia da consulta (só veterinário e suporte): tudo o que a recepção preencheu + histórico rápido.
+// Telefone inteiro do tutor aparece aqui (para ligar / WhatsApp), porque o veterinário está atendendo.
+async function atendimentosConsulta(request, env, id) {
+  await exigirPapel(request, env, PAPEIS_CLINICOS);
+  const item = await buscarItemAtendimento(env, id);
+  const pet = await env.DB.prepare(
+    `SELECT p.raca, p.raca_confirmada, p.sexo, p.observacoes, t.whatsapp AS tutor_whatsapp, a.peso_em
+       FROM atendimentos a JOIN pets p ON p.id = a.pet_id JOIN tutores t ON t.id = p.tutor_id WHERE a.id = ?`
+  ).bind(id).first();
+  const { results: visitas } = await env.DB.prepare(
+    `SELECT a.id, a.chegada_em, a.tipo, a.status, a.peso_kg, a.motivo FROM atendimentos a
+      WHERE a.pet_id = ? AND a.id <> ? AND a.status <> 'cancelado' ORDER BY a.chegada_em DESC, a.id DESC LIMIT 5`
+  ).bind(item.pet.id, id).all();
+  const { results: receitas } = await env.DB.prepare(
+    `SELECT r.id, r.status, r.versao, r.atendimento_id, r.liberada_em, r.criado_em, substr(r.texto, 1, 200) AS inicio
+       FROM receitas r WHERE r.pet_id = ? AND r.status <> 'cancelada' ORDER BY r.id DESC LIMIT 5`
+  ).bind(item.pet.id).all();
+  const internacao = await env.DB.prepare(
+    `SELECT i.id, i.inicio_em, b.nome AS baia_nome FROM internacoes i JOIN baias b ON b.id = i.baia_id WHERE i.pet_id = ? AND i.status = 'internado' ORDER BY i.id DESC LIMIT 1`
+  ).bind(item.pet.id).first();
+  const dela = await env.DB.prepare(
+    `SELECT id, status, linhas_json FROM receitas WHERE atendimento_id = ? AND status <> 'cancelada' ORDER BY id DESC LIMIT 1`
+  ).bind(id).first();
+  let remedios = 0;
+  try { remedios = (JSON.parse(dela?.linhas_json ?? '[]') ?? []).length; } catch { remedios = 0; }
+  const pedidos = await resumosDePedidos(env, [id]);
+  return json({
+    atendimento: item,
+    pet: { ...item.pet, raca: pet.raca ?? null, raca_confirmada: pet.raca_confirmada === 1, sexo: pet.sexo ?? null, observacoes: pet.observacoes ?? null },
+    tutor: { ...item.tutor, whatsapp: pet.tutor_whatsapp ?? null },
+    peso: { kg: item.peso_kg, em: pet.peso_em ?? (item.sem_peso ? null : item.chegada_em), origem: item.peso_origem },
+    visitas_anteriores: visitas.map((v) => ({ id: v.id, chegada_em: v.chegada_em, tipo: v.tipo ?? 'consulta', status: v.status, peso_kg: v.peso_kg ?? null, motivo: v.motivo ?? null })),
+    receitas_recentes: receitas.map((r) => ({
+      id: r.id, status: r.status, versao: r.versao, desta_consulta: r.atendimento_id === id, liberada_em: r.liberada_em ?? null, criado_em: r.criado_em,
+      previa: String(r.inicio ?? '').split('\n').map((x) => x.trim()).find((x) => x && !/^USO\b[^a-z\d]*$/.test(x))?.replace(/^\d+ - /, '').replace(/\*/g, '').slice(0, 80) ?? '',
+    })),
+    internacao_atual: internacao ? { id: internacao.id, inicio_em: internacao.inicio_em, baia_nome: internacao.baia_nome } : null,
+    receita_desta_consulta: dela ? { id: dela.id, status: dela.status, remedios } : null,
+    pedido: pedidos.get(id) ?? null,
+  });
+}
+
 // Tela "Hoje": chegadas do dia (dia = 00:00 às 24:00 em Bahia).
 async function hoje(request, env) {
   const u = await exigirLogin(request, env);
@@ -392,6 +452,7 @@ export const ROTAS_ATENDIMENTOS = [
   ['GET', '/api/hoje', hoje],
   ['POST', '/api/atendimentos', atendimentosCriar],
   ['GET', '/api/atendimentos/:id', atendimentosVer],
+  ['GET', '/api/atendimentos/:id/consulta', atendimentosConsulta],
   ['PATCH', '/api/atendimentos/:id', atendimentosAlterar],
   ['POST', '/api/atendimentos/:id/iniciar', atendimentosIniciar],
   ['POST', '/api/atendimentos/:id/finalizar', atendimentosFinalizar],

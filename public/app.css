@@ -823,3 +823,124 @@ details.mais-detalhes > summary { cursor: pointer; font-weight: 800; color: var(
 details.mais-detalhes .linha-idade { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 dialog.confirmacao .pergunta-vet { font-weight: 800; margin: 8px 0 10px; }
 dialog.confirmacao .grupo-chips button.chip-para { flex: 1 1 calc(50% - 10px); min-height: 60px; font-size: 1.0625rem; }
+
+/* ---------- Retorno (tipo da visita) ---------- */
+.bloco-tipo-visita { margin-bottom: 8px; }
+.bloco-tipo-visita .nota-tipo { font-size: 0.875rem; margin: 6px 0 0; }
+.pilula.retorno { color: var(--acao-escura); background: #fff; border: 1.5px solid var(--acao); padding: 1.5px 9px; }
+.pilula.tipo-consulta { color: var(--texto-rotulo); background: var(--cinza-fundo); }
+button.retorno-rapido { min-height: 60px; font-size: 1.0625rem; border-radius: var(--raio-cartao); border-color: var(--acao); color: var(--acao-escura); }
+
+/* ---------- Abas Preços | Estoque ---------- */
+.abas-precos { max-width: 420px; }
+.abas-precos button.aba { min-height: 48px; }
+
+/* ---------- Carrinho: apresentação e estoque no cartão do produto ---------- */
+.tile-apresentacao { font-size: 0.8125rem; font-weight: 600; line-height: 1.3; color: var(--texto-suave); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tile-estoque { margin-top: auto; font-size: 0.8125rem; font-weight: 800; padding: 1px 8px; border-radius: 999px; }
+.tile-estoque.ok { color: var(--acao-escura); background: var(--turquesa-fundo); }
+.tile-estoque.pouco { color: var(--laranja-texto); background: var(--laranja-fundo); }
+.tile-estoque.zerado { color: #fff; background: var(--urgente); }
+button.tile-botao { min-height: 124px; }
+
+/* ---------- Estoque ---------- */
+.bloco-estoque-campos { margin-top: 6px; }
+.est-resumo { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.est-resumo:empty { display: none; }
+.lista-estoque { display: flex; flex-direction: column; gap: 12px; }
+.est-item { padding: 0; overflow: hidden; margin: 0; }
+.est-linha { display: grid; grid-template-columns: 1fr; gap: 10px 16px; padding: 14px 16px; align-items: start; }
+.est-nome, .est-validade-bloco, .est-dura-bloco { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.est-nome strong { font-size: 1.1875rem; line-height: 1.25; overflow-wrap: anywhere; }
+.est-nome .detalhe, .est-validade-bloco .detalhe, .est-dura-bloco .detalhe, .est-qtd-bloco .detalhe { font-size: 0.875rem; color: var(--texto-suave); }
+.est-qtd-bloco { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.est-total { font-size: 1.75rem; font-weight: 800; color: var(--petroleo); line-height: 1.1; }
+.est-total.zerado { color: var(--urgente); }
+.validade { display: inline-block; align-self: flex-start; font-size: 0.9375rem; font-weight: 800; padding: 2px 10px; border-radius: 999px; }
+.validade.ok { color: var(--texto-rotulo); background: var(--cinza-fundo); }
+.validade.sem { color: var(--texto-suave); background: var(--cinza-fundo); font-weight: 700; }
+.validade.perto { color: var(--laranja-texto); background: var(--laranja-fundo); border: 1px solid var(--laranja-borda); }
+.validade.vencido { color: #fff; background: var(--urgente); }
+.est-dura { font-weight: 800; color: var(--petroleo); }
+.falta-estoque { color: var(--urgente) !important; font-weight: 700; }
+.est-botoes { display: flex; flex-wrap: wrap; gap: 8px; }
+.est-botoes button { min-height: 48px; padding: 0 16px; font-size: 0.9375rem; }
+.est-lotes { border-top: 1px solid var(--divisor); background: var(--rodape-cartao); padding: 8px 16px 14px; }
+.est-lotes h3 { font-size: 1rem; margin: 12px 0 4px; }
+.lote-linha { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.lote-info { flex: 1 1 260px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lote-info .detalhe { font-size: 0.8125rem; color: var(--texto-suave); }
+.lote-qtd { font-weight: 800; color: var(--petroleo); white-space: nowrap; }
+.mov-linha { display: grid; grid-template-columns: 110px 1fr; gap: 2px 12px; }
+.mov-linha .detalhe { grid-column: 2; font-size: 0.8125rem; color: var(--texto-suave); }
+.mov-qtd.neg { color: var(--urgente); }
+.mov-qtd.pos { color: var(--acao-escura); }
+.mov-linha.sem-estoque { background: var(--urgente-fundo); }
+details.lotes-vazios summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 700; color: var(--texto-suave); }
+@media (min-width: 900px) {
+  .est-linha { grid-template-columns: minmax(200px, 2fr) 110px minmax(170px, 1.4fr) minmax(120px, 1fr) auto; align-items: center; }
+  .est-botoes { flex-wrap: nowrap; justify-content: flex-end; }
+}
+
+/* ---------- Consulta (tela cheia) ---------- */
+.consulta-cabeca { display: grid; grid-template-columns: 1fr; gap: 12px; background: #fff; border: 2px solid var(--turquesa-borda); border-radius: var(--raio-cartao); padding: 16px; margin-bottom: 14px; }
+.consulta-cabeca.compacta { padding: 10px 14px; border-width: 1.5px; }
+.consulta-id { display: flex; gap: 14px; align-items: flex-start; }
+.foto-consulta { width: 96px; height: 96px; flex: none; border-radius: var(--raio-cartao); object-fit: cover; background: var(--turquesa-fundo); }
+.foto-consulta.sem-foto { display: flex; align-items: center; justify-content: center; font-size: 2.4rem; font-weight: 800; color: var(--acao); }
+.consulta-id-texto { min-width: 0; flex: 1; }
+.consulta-nome { font-size: 2.25rem; line-height: 1.1; margin: 0 0 4px; overflow-wrap: anywhere; }
+.consulta-linha-pet { margin: 0 0 8px; font-size: 1.0625rem; color: var(--texto-rotulo); font-weight: 600; }
+.consulta-selos { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.consulta-selos .pilula { margin-top: 0; font-size: 0.875rem; }
+.selo-urgente.sem-margem { margin-left: 0; }
+.consulta-peso { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; background: var(--turquesa-fundo); border-radius: var(--raio-campo); align-self: stretch; justify-content: center; }
+.consulta-peso-valor { font-size: 3rem; line-height: 1.05; font-weight: 800; color: var(--petroleo); }
+.consulta-peso .detalhe { font-size: 0.875rem; color: var(--texto-rotulo); }
+.consulta-motivo, .consulta-tutor { display: flex; flex-direction: column; gap: 3px; padding: 10px 14px; border: 1px solid var(--divisor); border-radius: var(--raio-campo); }
+.consulta-motivo p { margin: 0; font-size: 1.1875rem; font-weight: 700; color: var(--texto); overflow-wrap: anywhere; }
+.consulta-tutor strong { font-size: 1.125rem; }
+.consulta-fone { font-size: 1.0625rem; font-weight: 700; color: var(--petroleo); }
+.consulta-contato { display: flex; gap: 8px; margin-top: 4px; }
+.consulta-contato a.botao-link { flex: 1; padding: 8px; text-decoration: none; }
+.rotulo-mini { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--texto-suave); }
+.consulta-compacta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.consulta-compacta .miniatura { width: 44px; height: 44px; font-size: 1.125rem; }
+.compacta-nome { font-size: 1.375rem; }
+.compacta-tutor { font-size: 0.9375rem; margin-right: auto; }
+@media (min-width: 900px) {
+  .consulta-cabeca:not(.compacta) { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); grid-template-areas: "id peso" "motivo tutor"; }
+  .consulta-cabeca:not(.compacta) .consulta-id { grid-area: id; }
+  .consulta-cabeca:not(.compacta) .consulta-peso { grid-area: peso; }
+  .consulta-cabeca:not(.compacta) .consulta-motivo { grid-area: motivo; }
+  .consulta-cabeca:not(.compacta) .consulta-tutor { grid-area: tutor; }
+}
+.consulta-passos { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 5px; margin-bottom: 16px; background: var(--cinza-fundo); border-radius: var(--raio-campo); position: sticky; top: 0; z-index: 15; }
+button.passo-consulta { min-height: 56px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px 8px; padding: 4px 8px; color: var(--petroleo); background: transparent; box-shadow: none; font-size: 1.0625rem; border-radius: var(--raio-botao); }
+button.passo-consulta:hover:not(:disabled):not([aria-selected="true"]) { background: #fff; }
+button.passo-consulta[aria-selected="true"]:hover:not(:disabled) { background: var(--petroleo); color: #fff; }
+button.passo-consulta[aria-selected="true"] { color: #fff; background: var(--petroleo); }
+.passo-num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #fff; color: var(--petroleo); font-weight: 800; font-size: 0.9375rem; border: 1.5px solid var(--petroleo); }
+button.passo-consulta[aria-selected="true"] .passo-num { background: var(--turquesa-fundo); }
+.passo-info { font-size: 0.8125rem; font-weight: 800; padding: 1px 8px; border-radius: 999px; background: var(--turquesa-fundo); color: var(--acao-escura); }
+button.passo-consulta[aria-selected="true"] .passo-info { background: #fff; }
+@media (max-width: 520px) { .passo-info { display: none; } button.passo-consulta { font-size: 0.9375rem; } .passo-num { width: 24px; height: 24px; } }
+.consulta-duas-colunas { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 14px; }
+@media (min-width: 900px) { .consulta-duas-colunas { grid-template-columns: 1fr 1fr; } }
+.consulta-duas-colunas .cartao { margin: 0; }
+.sem-margem-topo { margin-top: 0; }
+button.proximo-passo { width: 100%; margin: 16px 0; }
+.consulta-rodape { margin-top: 28px; padding-top: 16px; border-top: 2px solid var(--divisor); }
+.consulta-rodape-botoes { display: flex; flex-wrap: wrap; gap: 10px; }
+.consulta-rodape-botoes .grande { flex: 2 1 280px; }
+.consulta-rodape-botoes .secundario { flex: 1 1 160px; min-height: 60px; }
+.consulta-acoes-receita { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.consulta-acoes-receita .grande { flex: 2 1 300px; }
+.consulta-acoes-receita .secundario { flex: 1 1 200px; min-height: 60px; }
+.carrinho-resumo li { padding: 6px 0; }
+.conta-embutida .barra-carrinho { margin-bottom: 0; }
+
+/* ---------- Receita: linhas que vêm do carrinho ---------- */
+.etiqueta.carrinho-etiqueta { background: var(--laranja-fundo); color: var(--laranja-texto); border: 1px solid var(--laranja-borda); }
+.remedio-linha.do-carrinho { border-color: var(--laranja-borda); }
+.nota-do-carrinho { margin: 6px 0 0; }

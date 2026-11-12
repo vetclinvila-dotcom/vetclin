@@ -285,10 +285,10 @@ test('proximoCodigo gera T-000001, T-000002 e P-000001', async () => {
   await assert.rejects(() => proximoCodigo(env, 'outro'));
 });
 
-test('catálogo traz as duas consultas iniciais', () => {
+test('catálogo traz as duas consultas iniciais e o item Retorno (migração 0012)', () => {
   const env = novoAmbiente();
   const l = env.DB.bruto.prepare('SELECT preco_centavos FROM catalogo ORDER BY id').all();
-  assert.deepEqual(l.map((x) => x.preco_centavos), [10000, 20000]);
+  assert.deepEqual(l.map((x) => x.preco_centavos), [10000, 20000, 0]); // consulta até o corte, após o corte, retorno
 });
 
 test('registro_acoes nunca contém senha nem hash', async () => {
