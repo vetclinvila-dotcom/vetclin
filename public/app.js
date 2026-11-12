@@ -1357,6 +1357,62 @@ async function telaJuntar(id) {
   }
 }
 
+// ---------- Integração com Google: planilha financeira e cópia de segurança (só administrador) ----------
+function secaoIntegracaoGoogle() {
+  const titulo = 'Integração com Google (planilha e cópia de segurança)';
+  const caixa = el('div', { class: 'cartao', id: 'integracao-google' }, el('h2', {}, titulo), el('p', { class: 'carregando' }, 'Carregando…'));
+  const quando = (iso) => new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Bahia', dateStyle: 'short', timeStyle: 'short' });
+  const montar = async () => {
+    try {
+      const st = await api('GET', '/api/admin/integracao');
+      const area = el('div');
+      const gerar = async (botao) => {
+        botao.disabled = true;
+        try {
+          const r = await api('POST', '/api/admin/integracao/chave', {});
+          // A chave aparece só agora: não fica guardada na tela nem no servidor (lá só o "resumo" dela).
+          const campoChave = el('input', { class: 'chave-integracao', id: 'chave-integracao', readonly: true, value: r.token, 'aria-label': 'Chave de acesso', autocomplete: 'off', spellcheck: 'false' });
+          const aviso = el('div');
+          const copiar = el('button', { type: 'button', onclick: async () => {
+            const ok = await copiarTexto(r.token);
+            aviso.replaceChildren(caixaMensagem(ok ? 'ok' : 'erro', ok ? 'Chave copiada.' : 'Não consegui copiar. Selecione a chave e copie à mão.'));
+            if (!ok) { campoChave.focus(); campoChave.select(); }
+          } }, 'Copiar');
+          caixa.replaceChildren(el('h2', {}, titulo),
+            caixaMensagem('ok', 'Chave criada.'),
+            el('p', { class: 'aviso-chave' }, el('strong', {}, 'Guarde agora; ela não aparece de novo. Gerar outra invalida a anterior.')),
+            campoChave, aviso,
+            el('div', { class: 'acoes' }, copiar, el('button', { type: 'button', class: 'secundario', onclick: montar }, 'Já guardei, fechar')));
+        } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
+      };
+      const botaoGerar = el('button', { type: 'button', id: 'gerar-chave' }, st.ativa ? 'Gerar outra chave' : 'Gerar chave de acesso');
+      botaoGerar.addEventListener('click', () => {
+        if (!st.ativa) { gerar(botaoGerar); return; }
+        // Já existe uma chave: pede confirmação, porque a planilha deixa de funcionar até colar a nova.
+        const sim = el('button', { type: 'button', id: 'confirmar-gerar' }, 'Sim, gerar outra');
+        sim.addEventListener('click', () => gerar(sim));
+        area.replaceChildren(caixaMensagem('erro', 'Gerar outra chave faz a atual parar de funcionar. A planilha só volta a atualizar depois que você colar a chave nova nela.'),
+          el('div', { class: 'acoes' }, sim, el('button', { type: 'button', class: 'secundario', onclick: () => area.replaceChildren() }, 'Cancelar')));
+      });
+      const botoes = [botaoGerar];
+      if (st.ativa) {
+        const desativar = el('button', { type: 'button', class: 'secundario', id: 'desativar-chave' }, 'Desativar chave');
+        desativar.addEventListener('click', async () => {
+          desativar.disabled = true;
+          try { await api('POST', '/api/admin/integracao/desativar', {}); await montar(); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); desativar.disabled = false; }
+        });
+        botoes.push(desativar);
+      }
+      caixa.replaceChildren(el('h2', {}, titulo),
+        el('p', {}, 'A planilha financeira e a cópia de segurança diária (no Google Drive da clínica) usam uma chave de acesso que só consegue LER os dados. Passo a passo em docs/PLANILHA-E-BACKUP.md.'),
+        el('p', { class: 'suave', id: 'estado-chave' }, st.ativa ? `Chave ativa, criada em ${quando(st.criado_em)}${st.criado_por ? ' por ' + st.criado_por : ''}.` : 'Nenhuma chave ativa.'),
+        area, el('div', { class: 'acoes' }, ...botoes));
+    } catch (e) { caixa.replaceChildren(el('h2', {}, titulo), caixaMensagem('erro', e.message)); }
+  };
+  montar();
+  return caixa;
+}
+
 // ---------- Dados de teste (só administrador) ----------
 function secaoDadosTeste() {
   const caixa = el('div', { class: 'cartao' }, el('h2', {}, 'Dados de teste'), el('p', { class: 'carregando' }, 'Carregando…'));
@@ -1444,6 +1500,7 @@ async function telaUsuarios() {
     ),
     el('div', { class: 'acoes' }, el('button', { type: 'button', onclick: telaNovoUsuario }, 'Novo usuário')),
     secaoDadosClinica(),
+    secaoIntegracaoGoogle(),
     secaoDadosTeste(),
   );
 }

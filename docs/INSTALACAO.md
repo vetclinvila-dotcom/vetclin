@@ -99,6 +99,16 @@ Requisito: iPhone com iOS 16.4 ou mais novo (Ajustes → Geral → Sobre → Ver
 
 ---
 
+## Planilha financeira e cópia de segurança (Google Drive)
+
+Depois que o sistema estiver no ar, vale ligar a **planilha "Vetclin — Financeiro"** (pagamentos e resumo por dia,
+atualizada sozinha) e a **cópia de segurança diária** no Google Drive da clínica.
+Passo a passo em **[docs/PLANILHA-E-BACKUP.md](PLANILHA-E-BACKUP.md)**
+(começa em **Usuários → Integração com Google → Gerar chave de acesso**).
+Esse guia também explica como restaurar os dados se algo der errado.
+
+---
+
 ## Atualizações futuras
 
 Você não precisa fazer nada: cada vez que um código novo for enviado ao GitHub,

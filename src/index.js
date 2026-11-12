@@ -13,6 +13,7 @@ import { ROTAS_RECEITAS } from './receitas.js';
 import { ROTAS_PUSH } from './notificacoes.js';
 import { ROTAS_PEDIDOS } from './pedidos.js';
 import { ROTAS_CATALOGO } from './catalogo.js';
+import { ROTAS_INTEGRACAO } from './integracao.js';
 
 const JANELA_MS = 15 * 60 * 1000; // 15 minutos
 const LIMITE_POR_LOGIN = 5;
@@ -230,6 +231,7 @@ const ROTAS = [
   ...ROTAS_PUSH,
   ...ROTAS_PEDIDOS,
   ...ROTAS_CATALOGO,
+  ...ROTAS_INTEGRACAO,
 ].map(([metodo, caminho, funcao]) => ({
   metodo, funcao,
   padrao: new RegExp('^' + caminho.replace(/:[a-z]+/g, '([^/]+)') + '/?$'),
@@ -246,6 +248,9 @@ function verificarCsrf(request, url) {
 }
 
 async function tratarApi(request, env, url) {
+  // Rotas da integração com o Google: SÓ leitura (GET) e só com chave no cabeçalho Authorization
+  // (sem cookies). Por isso os GETs delas não usam o cabeçalho anti-CSRF; qualquer outro método é recusado.
+  if (url.pathname.startsWith('/api/integracao/') && request.method !== 'GET') throw new ErroHttp(405, 'Método não permitido.');
   verificarCsrf(request, url);
   let caminhoExiste = false;
   for (const rota of ROTAS) {

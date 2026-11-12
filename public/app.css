@@ -668,3 +668,7 @@ img.comprovante-mini { width: 64px; height: 64px; object-fit: cover; border-radi
 .plano-b p { margin: 0; }
 a.botao-link { display: block; text-align: center; padding: 12px; min-height: 44px; border: 1.5px solid var(--borda-campo); border-radius: var(--raio-botao); background: #fff; color: var(--petroleo); font-weight: 800; text-decoration: none; }
 .conta-pagamentos > button#enviar-financeiro { margin-top: 12px; }
+
+/* Integração com Google: caixa da chave (aparece só uma vez) */
+.chave-integracao { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.95rem; word-break: break-all; }
+.aviso-chave { margin: 8px 0; }
