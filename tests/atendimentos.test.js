@@ -452,10 +452,10 @@ test('apagar dados de teste remove atendimentos e fotos de teste, mantém os rea
   await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(teste, { foto_id: fTeste }) });
   await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(real, { foto_id: fReal }) });
   const previa = await chamar(env, 'GET', '/api/admin/dados-teste', { cookie: vet });
-  assert.deepEqual(previa.dados, { tutores: 1, pets: 1, atendimentos: 1, pedidos: 0, fotos: 1 });
+  assert.deepEqual(previa.dados, { tutores: 1, pets: 1, atendimentos: 1, pedidos: 0, receitas: 0, fotos: 1 });
   const r = await chamar(env, 'POST', '/api/admin/apagar-dados-teste', { cookie: vet, corpo: { confirmacao: 'APAGAR' } });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.dados.apagados, { tutores: 1, pets: 1, atendimentos: 1, pedidos: 0, fotos: 1 });
+  assert.deepEqual(r.dados.apagados, { tutores: 1, pets: 1, atendimentos: 1, pedidos: 0, receitas: 0, fotos: 1 });
   const b = env.DB.bruto;
   assert.deepEqual(b.prepare('SELECT id FROM fotos ORDER BY id').all().map((x) => x.id), [fReal, fSolta]);
   assert.equal(b.prepare('SELECT COUNT(*) AS n FROM atendimentos').get().n, 1);
@@ -475,4 +475,74 @@ test('todas as rotas novas exigem login (401)', async () => {
     const r = await chamar(env, m, c, { corpo: m === 'GET' ? undefined : {} });
     assert.equal(r.status, 401, `${m} ${c}`);
   }
+});
+
+// ---------- notificações de chegada (passo 4) ----------
+test('chegada avisa os veterinários (menos quem registrou), com peso e urgência', async () => {
+  const { env, recepcao, vet } = await ambiente();
+  const avisos = [];
+  env.NOTIFICAR_TESTE = async (_env, aviso) => { avisos.push(aviso); return { enviados: 1, falhas: 0 }; };
+  const pet = await novoPet(env, recepcao, 'Thor', 'Maria');
+  const r = await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(pet, { urgente: true }) });
+  assert.equal(r.status, 201);
+  assert.equal(avisos.length, 1);
+  const a = avisos[0];
+  assert.equal(a.para.papel, 'veterinario');
+  assert.ok(a.para.excetoUsuarioId > 0);
+  assert.equal(a.titulo, 'URGENTE: Thor (cão)');
+  assert.equal(a.corpo, '12,4 kg · Vômito · tutor Maria');
+  assert.equal(a.urgente, true);
+  assert.equal(a.url, '#/hoje');
+
+  // "Pesar depois" e cadastro rápido com chegada também avisam.
+  avisos.length = 0;
+  const r2 = await chamar(env, 'POST', '/api/cadastro-rapido', { cookie: vet, corpo: {
+    tutor: { nome: 'Joana', whatsapp: '(71) 98888-7777' }, pet: { nome: 'Luna', especie: 'gato' },
+    chegada: { peso_kg: null, pesar_depois: true, motivo: 'Rotina', urgente: false } } });
+  assert.equal(r2.status, 201);
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0].titulo, 'Chegou: Luna (gato)');
+  assert.equal(avisos[0].corpo, 'Sem peso · Rotina · tutor Joana');
+});
+
+test('chegada: falha na notificação não impede o registro', async () => {
+  const { env, recepcao } = await ambiente();
+  env.NOTIFICAR_TESTE = async () => { throw new Error('serviço fora do ar'); };
+  const pet = await novoPet(env, recepcao, 'Bob');
+  assert.equal((await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(pet) })).status, 201);
+});
+
+test('push: rotas exigem login e só aceitam endereços oficiais', async () => {
+  const { env, vet } = await ambiente();
+  for (const [m, c] of [['GET', '/api/push/chave'], ['GET', '/api/push/estado'], ['POST', '/api/push/inscrever'], ['POST', '/api/push/cancelar'], ['POST', '/api/push/teste']]) {
+    assert.equal((await chamar(env, m, c, { corpo: m === 'POST' ? {} : undefined })).status, 401, c);
+  }
+  const chave = await chamar(env, 'GET', '/api/push/chave', { cookie: vet });
+  assert.equal(chave.status, 200);
+  assert.ok(chave.dados.publica.length > 80);
+  // Mesmo valor nas próximas chamadas (chave criada uma vez só).
+  assert.equal((await chamar(env, 'GET', '/api/push/chave', { cookie: vet })).dados.publica, chave.dados.publica);
+
+  const par = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', par.publicKey));
+  const b64 = (b) => Buffer.from(b).toString('base64url');
+  const keys = { p256dh: b64(raw), auth: b64(crypto.getRandomValues(new Uint8Array(16))) };
+
+  const ruim = await chamar(env, 'POST', '/api/push/inscrever', { cookie: vet, corpo: { endpoint: 'https://atacante.exemplo/x', keys } });
+  assert.equal(ruim.status, 400);
+  const chavesRuins = await chamar(env, 'POST', '/api/push/inscrever', { cookie: vet, corpo: { endpoint: 'https://web.push.apple.com/x', keys: { p256dh: 'abc', auth: 'def' } } });
+  assert.equal(chavesRuins.status, 400);
+
+  const ok = await chamar(env, 'POST', '/api/push/inscrever', { cookie: vet, corpo: { endpoint: 'https://web.push.apple.com/aparelho1', keys } });
+  assert.equal(ok.status, 200);
+  assert.equal((await chamar(env, 'GET', '/api/push/estado', { cookie: vet })).dados.aparelhos, 1);
+  // O contato (exigido pela Apple) passa a ser o endereço do sistema.
+  assert.equal(env.DB.bruto.prepare('SELECT contato FROM push_chaves').get().contato, ORIGEM);
+  // Inscrever de novo o mesmo aparelho não duplica.
+  await chamar(env, 'POST', '/api/push/inscrever', { cookie: vet, corpo: { endpoint: 'https://web.push.apple.com/aparelho1', keys } });
+  assert.equal((await chamar(env, 'GET', '/api/push/estado', { cookie: vet })).dados.aparelhos, 1);
+
+  assert.equal((await chamar(env, 'POST', '/api/push/cancelar', { cookie: vet, corpo: { endpoint: 'https://web.push.apple.com/aparelho1' } })).status, 200);
+  assert.equal((await chamar(env, 'GET', '/api/push/estado', { cookie: vet })).dados.aparelhos, 0);
+  assert.equal(acoes(env, 'ativar_notificacoes').length, 2);
 });

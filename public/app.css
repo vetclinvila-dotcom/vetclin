@@ -210,3 +210,68 @@ button.iniciar:hover { background: #155e75; }
   .hoje-grade { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; align-items: start; }
   .hoje-grade > .cartao.vazio, .hoje-grade > .secao-hoje.finalizados, .hoje-grade > p { grid-column: 1 / -1; }
 }
+
+/* ---------- Passo 4: receita rápida ---------- */
+.cabeca-receita .peso-receita { font-size: 1.15rem; margin: 2px 0; }
+.etiqueta.st-rascunho { background: #fef3c7; color: #92400e; margin-left: 8px; }
+.etiqueta.st-liberada { background: #cffafe; color: #155e75; margin-left: 8px; }
+.etiqueta.st-impressa { background: #dcfce7; color: #14532d; margin-left: 8px; }
+.etiqueta.st-entregue { background: #e5e7eb; color: #374151; margin-left: 8px; }
+.etiqueta.st-cancelada { background: #ffe4e6; color: #9f1239; margin-left: 8px; }
+
+.rotulo-receita { font-size: 1.2rem; }
+textarea.receita-texto { min-height: 240px; font-size: 1.15rem; line-height: 1.45; resize: none; overflow: hidden; border-width: 3px; }
+textarea.receita-orient { min-height: 100px; resize: none; overflow: hidden; }
+.estado-salvo { margin: 4px 2px 8px; font-size: 0.95rem; color: var(--cor-texto-suave); }
+.estado-salvo.erro { color: var(--cor-erro); font-weight: 600; }
+.chips-sugestao { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.chips-sugestao:empty { display: none; }
+button.chip-sugestao { justify-content: flex-start; text-align: left; font-weight: 500; min-height: 48px; color: var(--cor-destaque-escura); background: #ecfdf5; border-color: #99f6e4; white-space: normal; }
+button.chip-sugestao:hover { background: #ccfbf1; }
+.orientacoes-bloco { margin: 14px 0; }
+.orientacoes-bloco summary { cursor: pointer; font-weight: 600; min-height: 48px; display: flex; align-items: center; }
+.botoes-receita { display: grid; gap: 10px; margin: 20px 0; }
+.botoes-receita button { width: 100%; }
+.copia-escondida { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; }
+.folha-corpo { white-space: pre-wrap; overflow-wrap: anywhere; }
+.folha-orientacoes { margin-top: 16px; padding-top: 10px; border-top: 1px dashed var(--cor-borda); }
+
+/* Lista de receitas e cartões */
+.receita-item { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; border-left: 6px solid #0891b2; }
+.receita-item-info { flex: 1 1 200px; min-width: 0; }
+.receita-previa { font-style: italic; color: var(--cor-texto-suave); overflow-wrap: anywhere; }
+.secao-hoje.para-imprimir .secao-titulo { background: #0f766e; color: #fff; }
+.secao-hoje.para-imprimir .ver-todas { min-height: 36px; padding: 2px 12px; }
+.secao-hoje.pedidas .secao-titulo { background: #ede9fe; color: #5b21b6; }
+.secao-hoje.pedidas .receita-item { border-left-color: #7c3aed; }
+button.receita-linha { margin-bottom: 0; }
+.previa-folha { margin-bottom: 16px; }
+
+/* Folha do receituário (aparece na tela e no papel) */
+.folha { position: relative; background: #fff; color: #000; border: 1px solid var(--cor-borda); border-radius: 4px; padding: 20px; margin: 12px 0 24px; font-size: 1rem; line-height: 1.5; display: flex; flex-direction: column; }
+.folha-via { position: absolute; top: 8px; right: 12px; font-size: 0.8rem; border: 1px solid #000; padding: 0 8px; }
+.folha-cabeca { text-align: center; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px; }
+.folha-clinica { font-size: 1.8rem; font-weight: 800; line-height: 1.2; }
+.folha-contato { font-size: 0.9rem; }
+.folha-titulo { text-align: center; letter-spacing: 0.2em; font-size: 1.2rem; margin: 8px 0; }
+.folha-data { text-align: right; margin-bottom: 10px; }
+.folha-dados { margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid #999; }
+.folha-assinatura { margin-top: auto; padding-top: 56px; text-align: center; }
+.folha-linha { width: 60%; margin: 0 auto 4px; border-top: 1px solid #000; }
+.folha-vet { font-weight: 700; }
+.botoes-impressao button { flex: 1 1 140px; }
+
+/* Papel A4 */
+@page { size: A4; margin: 15mm; }
+@media print {
+  body { background: #fff; font-size: 12pt; }
+  #app.impressao { max-width: none; padding: 0; }
+  .topo, .so-tela, button, dialog, .voltar { display: none !important; }
+  .folha { border: 0; border-radius: 0; padding: 0; margin: 0; min-height: 255mm; }
+}
+
+/* ---------- Notificações ---------- */
+.cartao-notificacoes h3 { margin-top: 0; }
+.cartao-notificacoes ol { padding-left: 1.2em; line-height: 1.6; }
+.aviso-notificacoes:empty { display: none; }
+.aviso-notificacoes { color: var(--cor-texto-suave); margin-bottom: 0; }

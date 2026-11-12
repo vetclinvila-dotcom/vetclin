@@ -1,6 +1,7 @@
 // Atendimentos: chegada do paciente, tela "Hoje", iniciar, finalizar e cancelar.
 // O atendimento é por ordem de chegada (sem hora marcada).
 import { exigirLogin, exigirPapel } from './auth.js';
+import { notificar } from './notificacoes.js';
 import { ErroHttp, agoraISO, finalTelefone, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
 
 const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem pode iniciar e finalizar
@@ -95,6 +96,33 @@ export async function registrarChegada(env, { usuarioId, atendimentoId, petId, a
     depois: { pet_id: petId, peso_kg: a.peso, peso_origem: a.pesoOrigem, motivo: a.motivo, urgente: a.urgente, foto_id: a.fotoId, ...(via ? { via } : {}) },
     ip,
   });
+  await avisarChegada(env, atendimentoId, usuarioId);
+}
+
+// Avisa os veterinários no celular que um paciente chegou.
+// Nunca atrapalha o registro, mesmo se a notificação falhar.
+// ("env.NOTIFICAR_TESTE" é um gancho só para os testes conferirem o que seria enviado.)
+const NOME_ESPECIE = { cao: 'cão', gato: 'gato', outro: 'outro' };
+export function textoAvisoChegada(item) {
+  const pet = item.pet;
+  const especie = NOME_ESPECIE[pet.especie] || pet.especie || '';
+  const peso = item.sem_peso ? 'Sem peso' : `${String(item.peso_kg).replace('.', ',')} kg`;
+  return {
+    titulo: `${item.urgente ? 'URGENTE: ' : 'Chegou: '}${pet.nome}${especie ? ` (${especie})` : ''}`,
+    corpo: [peso, item.motivo, item.tutor?.nome ? `tutor ${item.tutor.nome}` : ''].filter(Boolean).join(' · '),
+  };
+}
+async function avisarChegada(env, atendimentoId, usuarioId) {
+  try {
+    const item = await buscarItemAtendimento(env, atendimentoId);
+    const { titulo, corpo } = textoAvisoChegada(item);
+    await (env.NOTIFICAR_TESTE ?? notificar)(env, {
+      para: { papel: 'veterinario', excetoUsuarioId: usuarioId },
+      titulo, corpo, url: '#/hoje', tag: `chegada-${atendimentoId}`, urgente: item.urgente,
+    });
+  } catch (e) {
+    console.error('Falha ao avisar chegada:', e);
+  }
 }
 
 // ---------- leitura ----------

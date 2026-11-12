@@ -2,8 +2,11 @@
 // Segurança: textos vindos do servidor/usuário só entram na tela via
 // textContent (função "el"), nunca como HTML cru.
 
+import { cartaoNotificacoes } from './notificacoes-app.js';
+
 const raiz = document.getElementById('app');
 let usuario = null; // usuário logado
+let destinoLogin = null; // tela que a pessoa tentou abrir antes de entrar (ex.: link de receita)
 
 // ---------- ajudantes ----------
 
@@ -25,7 +28,7 @@ function el(tag, atributos = {}, ...filhos) {
 }
 
 function mostrar(...elementos) {
-  raiz.classList.remove('larga'); // só a tela Hoje usa a largura grande
+  raiz.classList.remove('larga', 'impressao'); // só a tela Hoje usa a largura grande; 'impressao' é a folha da receita
   raiz.replaceChildren(...elementos.filter((x) => x != null && x !== false)); // ignora vazios (senão apareceria o texto "null")
 }
 
@@ -125,13 +128,22 @@ function telaConfiguracaoInicial() {
       )));
 }
 
+// Guarda a tela pedida (só endereços internos "#/...") para voltar a ela depois do login.
+function lembrarDestino() {
+  const h = location.hash;
+  destinoLogin = /^#\/[a-z]/.test(h) && !h.startsWith('#/hoje') ? h : null;
+}
+
 function telaEntrar() {
+  if (!destinoLogin) lembrarDestino();
   mostrar(
     el('h1', {}, 'Vetclin'),
     el('div', { class: 'cartao' },
       formulario(async (d) => {
         usuario = await api('POST', '/api/entrar', { login: d.login, senha: d.senha });
-        irPara('#/hoje');
+        const destino = destinoLogin;
+        destinoLogin = null;
+        irPara(destino || '#/hoje');
       },
         campo('Login', 'login', { autocomplete: 'username', autocapitalize: 'none', required: true }),
         campo('Senha', 'senha', { type: 'password', autocomplete: 'current-password', required: true }),
@@ -527,6 +539,12 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
     });
     botoes.push(b);
   }
+  if ((a.status === 'em_atendimento' || a.status === 'finalizado') && PODE_ATENDER.includes(usuario.papel)) {
+    const b = el('button', { type: 'button', class: 'receita-botao' }, 'Receita');
+    b.addEventListener('click', async () => { b.disabled = true; try { await abrirNovaReceita({ atendimento_id: a.id }); } catch (e) { b.disabled = false; aoErro(e); } });
+    botoes.push(b);
+  }
+  botoes.push(el('button', { type: 'button', class: 'secundario colar-botao', onclick: () => irPara(`#/receitas/transcrever?pet=${p.id}&atendimento=${a.id}`) }, 'Receita do WhatsApp'));
   if (a.status === 'chegou' || a.status === 'em_atendimento') {
     botoes.push(el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/atendimento/${a.id}/editar`) }, 'Editar'));
   }
@@ -549,18 +567,27 @@ function telaHoje() {
   const minha = versaoTela;
   let dados = null;
   let finalizadosAberto = false;
+  let receitas = { imprimir: [], pedidas: [] };
+  const topoReceitas = el('div');
   const avisos = el('div');
+  // Cartão "Ativar notificações": só aparece enquanto este aparelho não recebe avisos.
+  const cartaoAviso = el('div');
+  cartaoNotificacoes({ compacto: true }).then((c) => { if (c && minha === versaoTela) cartaoAviso.replaceChildren(c); }).catch(() => {});
   const listas = el('div', { class: 'hoje-grade' }, el('p', { class: 'carregando' }, 'Carregando…'));
   mostrar(
     cabecalho(),
     el('h1', {}, 'Hoje'),
+    cartaoAviso,
+    topoReceitas,
     el('div', { class: 'acoes-grandes' },
       el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/busca?modo=chegada') }, 'Registrar chegada'),
       el('button', { type: 'button', class: 'grande secundario', id: 'cadastro-rapido', onclick: () => irPara('#/cadastro') }, 'Cadastro rápido'),
     ),
     avisos, listas,
     el('p', { class: 'suave' }, el('span', { class: 'etiqueta' }, NOME_PAPEL[usuario.papel] || usuario.papel), usuario.admin ? el('span', { class: 'etiqueta' }, 'Administrador') : null, usuario.nome),
-    usuario.admin ? el('div', { class: 'acoes' }, el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/usuarios') }, 'Usuários')) : null,
+    el('div', { class: 'acoes' },
+      el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/notificacoes') }, 'Notificações'),
+      usuario.admin ? el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/usuarios') }, 'Usuários') : null),
   );
 
   raiz.classList.add('larga');
@@ -571,7 +598,28 @@ function telaHoje() {
       itens.length ? itens.map((a) => cartaoAtendimento(a, { aoAtualizar: atualizar, aoErro: (e) => avisos.replaceChildren(caixaMensagem('erro', e.message)) })) : el('p', { class: 'suave vazio-secao' }, vazio));
   }
 
+  // Receitas: "Para imprimir" (todos) e "Pedidos de receita para você" (veterinários).
+  function desenharReceitas() {
+    const partes = [];
+    if (receitas.pedidas.length) {
+      partes.push(el('section', { class: 'secao-hoje pedidas' },
+        el('h2', { class: 'secao-titulo' }, 'Pedidos de receita para você', el('span', { class: 'contador' }, String(receitas.pedidas.length))),
+        receitas.pedidas.map((x) => el('article', { class: 'cartao receita-item' },
+          el('div', { class: 'receita-item-info' },
+            el('div', { class: 'atend-nome' }, x.pet.nome),
+            el('div', { class: 'suave' }, `${x.solicitada_por_nome || 'Um colega'} pediu${x.nota_pedido ? ' · ' + x.nota_pedido : ''}`)),
+          el('button', { type: 'button', class: 'abrir-pedido', onclick: () => irPara(`#/receita/${x.id}`) }, 'Abrir receita')))));
+    }
+    if (receitas.imprimir.length) {
+      partes.push(el('section', { class: 'secao-hoje para-imprimir' },
+        el('h2', { class: 'secao-titulo' }, `Para imprimir (${receitas.imprimir.length})`, el('button', { type: 'button', class: 'secundario ver-todas', onclick: () => irPara('#/receitas/imprimir') }, 'Ver lista')),
+        receitas.imprimir.map(cartaoParaImprimir)));
+    }
+    topoReceitas.replaceChildren(...partes);
+  }
+
   function desenhar() {
+    desenharReceitas();
     if (!dados) return;
     const total = dados.aguardando.length + dados.em_atendimento.length + dados.finalizados.length + dados.cancelados_hoje;
     const finais = el('details', { class: 'secao-hoje finalizados', open: finalizadosAberto },
@@ -592,9 +640,14 @@ function telaHoje() {
   async function atualizar() {
     if (minha !== versaoTela) return;
     try {
-      const novo = await api('GET', '/api/hoje');
+      const [novo, imprimir, pedidas] = await Promise.all([
+        api('GET', '/api/hoje'),
+        api('GET', '/api/receitas?status=para_imprimir').catch(() => null),
+        PODE_ATENDER.includes(usuario.papel) ? api('GET', '/api/receitas?pedidas_a_mim=1').catch(() => null) : null,
+      ]);
       if (minha !== versaoTela) return;
       dados = novo;
+      receitas = { imprimir: imprimir ? imprimir.receitas : receitas.imprimir, pedidas: pedidas ? pedidas.receitas : (PODE_ATENDER.includes(usuario.papel) ? receitas.pedidas : []) };
       avisos.replaceChildren();
       desenhar();
     } catch (e) {
@@ -834,7 +887,7 @@ async function telaPet(id) {
   let d;
   try { d = await api('GET', `/api/pets/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/busca'); return; }
   if (minha !== versaoTela) return;
-  const { pet, tutor, atendimentos, atendimento_aberto: aberto } = d;
+  const { pet, tutor, atendimentos, atendimento_aberto: aberto, receitas = [] } = d;
   const linha = (rotulo, ...valor) => el('p', {}, el('span', { class: 'suave' }, rotulo + ': '), ...valor);
   mostrar(
     cabecalho(), botaoVoltar('#/busca', '← Buscar'),
@@ -849,6 +902,12 @@ async function telaPet(id) {
           el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/hoje') }, 'Ver em Hoje'))
         : el('button', { type: 'button', class: 'grande bloco', id: 'registrar-chegada', onclick: () => irPara(`#/chegada/${pet.id}`) }, 'Registrar chegada'))
       : null,
+    pet.ativo && PODE_ATENDER.includes(usuario.papel)
+      ? el('button', { type: 'button', class: 'grande bloco', id: 'nova-receita', onclick: async (ev) => {
+        ev.currentTarget.disabled = true;
+        try { await abrirNovaReceita({ pet_id: pet.id, atendimento_id: aberto ? aberto.id : undefined }); } catch (e) { ev.target.disabled = false; alert(e.message); }
+      } }, 'Nova receita') : null,
+    pet.ativo ? el('button', { type: 'button', class: 'secundario bloco', id: 'colar-receita-pet', onclick: () => irPara(`#/receitas/transcrever?pet=${pet.id}${aberto ? '&atendimento=' + aberto.id : ''}`) }, 'Colar receita do WhatsApp') : null,
     el('div', { class: 'cartao' },
       linha('Espécie', ROTULO_ESPECIE[pet.especie] || pet.especie),
       linha('Raça', pet.raca || 'Não informada', pet.raca && !pet.raca_confirmada ? el('span', { class: 'etiqueta alerta' }, 'a confirmar') : null),
@@ -863,6 +922,8 @@ async function telaPet(id) {
       linha('WhatsApp', formatarTelefone(tutor.whatsapp)),
       el('p', {}, el('small', { class: 'suave' }, tutor.codigo)),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/tutor/${tutor.id}`) }, 'Abrir ficha do tutor')),
+    el('h2', {}, 'Receitas'),
+    el('div', { class: 'cartao' }, listaReceitasPet(receitas)),
     el('h2', {}, 'Histórico de atendimentos e peso'),
     el('div', { class: 'cartao' },
       atendimentos.length
@@ -1101,13 +1162,13 @@ function secaoDadosTeste() {
           const r = await api('POST', '/api/admin/apagar-dados-teste', { confirmacao: entrada.value });
           const a = r.apagados;
           caixa.replaceChildren(el('h2', {}, 'Dados de teste'),
-            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos, ${a.fotos} fotos.`));
+            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos, ${a.receitas} receitas, ${a.fotos} fotos.`));
         } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
       });
       caixa.replaceChildren(
         el('h2', {}, 'Dados de teste'),
-        el('p', {}, 'Apaga todos os tutores e pets cujo nome começa com TESTE, e os atendimentos deles.'),
-        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos, ${c.fotos} fotos.`)),
+        el('p', {}, 'Apaga todos os tutores e pets cujo nome começa com TESTE, e os atendimentos e receitas deles.'),
+        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos, ${c.receitas} receitas, ${c.fotos} fotos.`)),
         el('label', { for: 'confirmacao' }, 'Para confirmar, digite APAGAR'), entrada, area, el('div', { class: 'acoes' }, botao));
     } catch (e) { caixa.replaceChildren(el('h2', {}, 'Dados de teste'), caixaMensagem('erro', e.message)); }
   };
@@ -1125,6 +1186,7 @@ function cabecalho() {
 async function sair() {
   try { await api('POST', '/api/sair'); } catch { /* mesmo com erro, voltamos ao login */ }
   usuario = null;
+  destinoLogin = null;
   telaEntrar();
 }
 
@@ -1150,11 +1212,13 @@ async function telaUsuarios() {
             el('span', { class: 'etiqueta' }, NOME_PAPEL[u.papel] || u.papel),
             u.admin ? el('span', { class: 'etiqueta' }, 'Administrador') : null,
             u.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Inativo'),
+            u.whatsapp ? el('span', { class: 'suave' }, ' ' + formatarTelefone(u.whatsapp)) : null,
           ),
           el('button', { class: 'secundario', type: 'button', onclick: () => telaEditarUsuario(u) }, 'Editar'),
         ))),
     ),
     el('div', { class: 'acoes' }, el('button', { type: 'button', onclick: telaNovoUsuario }, 'Novo usuário')),
+    secaoDadosClinica(),
     secaoDadosTeste(),
   );
 }
@@ -1176,7 +1240,7 @@ function telaNovoUsuario() {
     el('div', { class: 'cartao' },
       formulario(async (d) => {
         await api('POST', '/api/usuarios', {
-          nome: d.nome, login: d.login, senha: d.senha, papel: d.papel, crmv: d.crmv, admin: d.admin === 'on',
+          nome: d.nome, login: d.login, senha: d.senha, papel: d.papel, crmv: d.crmv, whatsapp: d.whatsapp, admin: d.admin === 'on',
         });
         telaUsuarios();
       },
@@ -1185,6 +1249,7 @@ function telaNovoUsuario() {
         campo('Senha (mínimo 8 caracteres)', 'senha', { type: 'password', autocomplete: 'new-password', minlength: 8, required: true }),
         el('label', { for: 'papel' }, 'Papel'), selectPapel(),
         campo('CRMV (só para veterinários)', 'crmv'),
+        campo('WhatsApp (para receber pedidos de receita)', 'whatsapp', { type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off' }),
         el('label', { class: 'linha' }, el('input', { type: 'checkbox', name: 'admin' }), 'Administrador'),
         el('button', { type: 'submit' }, 'Criar usuário'),
       )));
@@ -1197,7 +1262,7 @@ function telaEditarUsuario(u) {
     el('h1', {}, `Editar ${u.nome}`),
     el('div', { class: 'cartao' },
       formulario(async (d) => {
-        const corpo = { nome: d.nome, papel: d.papel, crmv: d.crmv, admin: d.admin === 'on', ativo: d.ativo === 'on' };
+        const corpo = { nome: d.nome, papel: d.papel, crmv: d.crmv, whatsapp: d.whatsapp, admin: d.admin === 'on', ativo: d.ativo === 'on' };
         if (d.senha) corpo.senha = d.senha;
         await api('PATCH', `/api/usuarios/${u.id}`, corpo);
         // Se o administrador editou a si mesmo, atualiza os dados da tela.
@@ -1208,6 +1273,7 @@ function telaEditarUsuario(u) {
         campo('Nome', 'nome', { required: true, value: u.nome }),
         el('label', { for: 'papel' }, 'Papel'), selectPapel(u.papel),
         campo('CRMV', 'crmv', { value: u.crmv || '' }),
+        campo('WhatsApp (para receber pedidos de receita)', 'whatsapp', { type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off', value: u.whatsapp ? formatarTelefone(u.whatsapp) : '' }),
         el('label', { class: 'linha' }, el('input', { type: 'checkbox', name: 'admin', checked: u.admin }), 'Administrador'),
         el('label', { class: 'linha' }, el('input', { type: 'checkbox', name: 'ativo', checked: u.ativo }), 'Ativo (pode entrar no sistema)'),
         campo('Nova senha (deixe em branco para não mudar)', 'senha', { type: 'password', autocomplete: 'new-password', minlength: 8 }),
@@ -1216,7 +1282,645 @@ function telaEditarUsuario(u) {
 }
 
 
+// ---------- Receitas ----------
+const ROTULO_RECEITA = { rascunho: 'Rascunho', liberada: 'Liberada', impressa: 'Impressa', entregue: 'Entregue', cancelada: 'Cancelada' };
+const MODELO_LINHA = 'Medicamento ___ mg — dar ___ a cada ___ horas por ___ dias';
+
+// "Dra. Elizabeth" fica como está; "Felipe" vira "Dr(a). Felipe".
+function comTratamento(nome) {
+  const n = String(nome ?? '').trim();
+  return /^dra?\.?\s/i.test(n) ? n : `Dr(a). ${n}`;
+}
+
+// "1234" -> "CRMV 1234"; "CRMV-BA 1234" fica como está.
+function rotuloCrmv(c) {
+  const t = String(c ?? '').trim();
+  return !t ? '' : /^crmv/i.test(t) ? t : `CRMV ${t}`;
+}
+
+function chipReceita(status) {
+  return el('span', { class: 'etiqueta st-' + status }, ROTULO_RECEITA[status] || status);
+}
+
+// Transforma o texto colado do WhatsApp em elementos da tela: mantém as quebras de linha,
+// *negrito* e _itálico_. Nunca usa innerHTML (tudo entra como texto).
+function marcasZap(linha) {
+  const nos = [];
+  let buf = '';
+  const descarrega = () => { if (buf) { nos.push(buf); buf = ''; } };
+  let i = 0;
+  while (i < linha.length) {
+    const ch = linha[i];
+    if (ch === '*' || ch === '_') {
+      const fim = linha.indexOf(ch, i + 1);
+      const colado = fim > i + 1 && !/\s/.test(linha[i + 1]) && !/\s/.test(linha[fim - 1]);
+      // O sublinhado dentro de uma palavra (ex.: nome_do_arquivo) não vira itálico.
+      const dentroDePalavra = ch === '_' && fim > 0 && ((i > 0 && /\w/.test(linha[i - 1])) || /\w/.test(linha[fim + 1] || ''));
+      if (colado && !dentroDePalavra) {
+        descarrega();
+        nos.push(el(ch === '*' ? 'strong' : 'em', {}, ...marcasZap(linha.slice(i + 1, fim))));
+        i = fim + 1;
+        continue;
+      }
+    }
+    buf += ch;
+    i += 1;
+  }
+  descarrega();
+  return nos;
+}
+
+function renderizarReceita(textoReceita) {
+  const saida = [];
+  String(textoReceita ?? '').split('\n').forEach((linha, n) => {
+    if (n > 0) saida.push('\n');
+    saida.push(...marcasZap(linha));
+  });
+  return saida;
+}
+
+function limparInvisiveis(t) {
+  return String(t).replace(/[​-‍⁠﻿]/g, '').replace(/\r\n?/g, '\n');
+}
+
+async function copiarTexto(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch { /* tenta o jeito antigo */ }
+  const area = el('textarea', { class: 'copia-escondida', readonly: true }, t);
+  document.body.append(area);
+  area.select();
+  area.setSelectionRange(0, t.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  area.remove();
+  return ok;
+}
+
+function dataPorExtenso(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return d.toLocaleDateString('pt-BR', { timeZone: 'America/Bahia', day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+// "Cão, SRD, 5 anos, 12,4 kg"
+function linhaPaciente(p) {
+  const partes = [ROTULO_ESPECIE[p.especie] || p.especie, p.raca, idadeCurta(p), p.peso_kg != null ? formatarPeso(p.peso_kg) : null].filter(Boolean);
+  return partes.join(', ');
+}
+
+// A folha do receituário (A4). Usada na impressão, na prévia do editor e na transcrição.
+// d = { clinica, pet:{nome,especie,raca,idade_anos,idade_meses,peso_kg}, tutor, vet:{nome,crmv}|null, texto, orientacoes, data, segundaVia }
+function montarFolha(d) {
+  const c = d.clinica || {};
+  const contato = [c.clinica_endereco, c.clinica_telefone, c.clinica_cidade].filter(Boolean).join(' · ');
+  const cidadeData = (c.clinica_cidade ? c.clinica_cidade + ', ' : '') + dataPorExtenso(d.data);
+  return el('article', { class: 'folha' },
+    d.segundaVia ? el('div', { class: 'folha-via' }, '2ª via') : null,
+    el('header', { class: 'folha-cabeca' },
+      el('div', { class: 'folha-clinica' }, c.clinica_nome || 'Vetclin'),
+      contato ? el('div', { class: 'folha-contato' }, contato) : null),
+    el('h2', { class: 'folha-titulo' }, 'RECEITUÁRIO'),
+    el('div', { class: 'folha-data' }, cidadeData),
+    el('div', { class: 'folha-dados' },
+      el('div', {}, el('strong', {}, 'Tutor: '), d.tutor),
+      el('div', {}, el('strong', {}, 'Paciente: '), `${d.pet.nome} — ${linhaPaciente(d.pet)}`)),
+    el('div', { class: 'folha-corpo' }, ...renderizarReceita(d.texto)),
+    d.orientacoes ? el('div', { class: 'folha-orientacoes' }, el('strong', {}, 'Orientações'), el('div', { class: 'folha-corpo' }, ...renderizarReceita(d.orientacoes))) : null,
+    el('footer', { class: 'folha-assinatura' },
+      el('div', { class: 'folha-linha' }),
+      el('div', { class: 'folha-vet' }, d.vet ? comTratamento(d.vet.nome) : 'Veterinário(a)'),
+      d.vet && d.vet.crmv ? el('div', {}, rotuloCrmv(d.vet.crmv)) : null));
+}
+
+// Dados da folha a partir da resposta de GET /api/receitas/:id.
+function dadosDaFolha(d, vetPrevia = null) {
+  const r = d.receita;
+  const peso = d.pet.ultimo_peso;
+  return {
+    clinica: d.clinica,
+    pet: { nome: d.pet.nome, especie: d.pet.especie, raca: d.pet.raca, idade_anos: d.pet.idade_anos, idade_meses: d.pet.idade_meses, peso_kg: peso ? peso.kg : null },
+    tutor: d.tutor.nome,
+    vet: d.veterinario || vetPrevia,
+    texto: r.texto, orientacoes: r.orientacoes, data: r.liberada_em || null,
+    segundaVia: r.vezes_impressa >= 1,
+  };
+}
+
+function cabecaReceita(d) {
+  const p = d.pet;
+  const peso = p.ultimo_peso;
+  return el('div', { class: 'cartao cabeca-receita' },
+    el('div', { class: 'atend-nome' }, p.nome, ' ', chipReceita(d.receita.status), d.receita.versao > 1 ? el('span', { class: 'etiqueta' }, `Versão ${d.receita.versao}`) : null),
+    el('div', { class: 'suave' }, [ROTULO_ESPECIE[p.especie] || p.especie, idadeCurta(p)].filter(Boolean).join(' · ')),
+    peso
+      ? el('div', { class: 'peso-receita' }, 'Último peso: ', el('strong', {}, formatarPeso(peso.kg)), el('span', { class: 'suave' }, ` (${formatarDia(peso.data)})`))
+      : el('div', { class: 'peso-receita suave' }, 'Sem peso registrado'),
+    el('div', { class: 'suave' }, `Tutor: ${d.tutor.nome}`),
+    d.receita.origem === 'transcrita' ? el('div', { class: 'suave' }, `Transcrita por ${d.receita.criado_por_nome || 'a recepção'} · o veterinário confere e assina no papel`) : null);
+}
+
+// Janela para escolher o veterinário (e uma observação) e enviar o pedido.
+// "aoEscolher(vet, nota, acao)" pode lançar erro: a mensagem aparece na janela.
+function dialogoPedirReceita(vets, aoEscolher) {
+  return new Promise((resolve) => {
+    const seletor = el('select', { id: 'pedir-vet' }, el('option', { value: '' }, 'Escolha o veterinário…'), vets.map((v) => el('option', { value: String(v.id) }, v.nome)));
+    const nota = el('input', { id: 'pedir-nota', type: 'text', maxlength: 200, autocomplete: 'off', placeholder: 'ex.: cão com otite, 12 kg' });
+    const area = el('div');
+    const enviar = el('button', { type: 'button', id: 'pedir-whatsapp' }, 'Enviar pelo WhatsApp');
+    const copiar = el('button', { type: 'button', class: 'secundario', id: 'pedir-copiar' }, 'Copiar link');
+    const d = el('dialog', { class: 'confirmacao' },
+      el('h2', {}, 'Enviar para outro veterinário'),
+      el('p', { class: 'suave' }, 'O colega recebe o link no WhatsApp, abre e escreve a receita.'),
+      el('label', { for: 'pedir-vet' }, 'Para quem?'), seletor,
+      el('label', { for: 'pedir-nota' }, 'Observação (opcional)'), nota, area,
+      el('div', { class: 'acoes' }, enviar, copiar, el('button', { type: 'button', class: 'secundario', id: 'pedir-voltar' }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    const rodar = (botao, acao) => async () => {
+      area.replaceChildren();
+      const vet = vets.find((v) => String(v.id) === seletor.value);
+      if (!vet) { area.replaceChildren(caixaMensagem('erro', 'Escolha o veterinário.')); return; }
+      botao.disabled = true;
+      try { await aoEscolher(vet, nota.value.trim(), acao); fechar(true); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
+    };
+    enviar.addEventListener('click', rodar(enviar, 'whatsapp'));
+    copiar.addEventListener('click', rodar(copiar, 'copiar'));
+    d.querySelector('#pedir-voltar').addEventListener('click', () => fechar(false));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+// Texto do pedido enviado ao colega pelo WhatsApp.
+function mensagemPedido(d, vet, nota) {
+  const p = d.pet;
+  const info = [ROTULO_ESPECIE[p.especie] || p.especie, idadeCurta(p), p.ultimo_peso ? formatarPeso(p.ultimo_peso.kg) : null].filter(Boolean).join(', ');
+  return `Oi, ${vet.nome}! Pode escrever a receita do *${p.nome}* (${info}) — tutor ${d.tutor.nome}? É só abrir: ${location.origin}/#/receita/${d.receita.id}` + (nota ? `\n\nObs.: ${nota}` : '');
+}
+
+function linkWhatsapp(vet, mensagem) {
+  const digitos = String(vet.whatsapp || '').replace(/\D/g, '');
+  return `https://wa.me/${digitos}?text=${encodeURIComponent(mensagem)}`;
+}
+
+// ---------- Editor da receita ----------
+async function telaReceita(id) {
+  const minha = versaoTela;
+  carregando();
+  let d;
+  try { d = await api('GET', `/api/receitas/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  if (d.receita.status !== 'rascunho') { telaReceitaLeitura(d, minha); return; }
+  const r = d.receita;
+  const ehVet = usuario.papel === 'veterinario';
+
+  const texto = el('textarea', { id: 'receita-texto', class: 'receita-texto', rows: 10, placeholder: 'Escreva ou cole aqui o texto do WhatsApp', 'aria-label': 'Receita', maxlength: 10000, autocomplete: 'off', autocapitalize: 'sentences' }, r.texto);
+  const orient = el('textarea', { id: 'receita-orientacoes', class: 'receita-orient', rows: 4, maxlength: 5000, 'aria-label': 'Orientações', placeholder: 'Cuidados para o tutor (alimentação, repouso, retorno…)' }, r.orientacoes || '');
+  const estado = el('div', { class: 'estado-salvo', role: 'status' }, 'Salvo');
+  const sugestoes = el('div', { class: 'chips-sugestao', 'aria-label': 'Sugestões' });
+  const avisos = el('div');
+  const blocoOrient = el('details', { class: 'orientacoes-bloco', open: !!r.orientacoes }, el('summary', {}, 'Orientações (opcional)'), orient);
+
+  // ----- crescer sozinho -----
+  const crescer = (t) => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; };
+
+  // ----- salvar sozinho (1,5 s depois de parar de digitar) -----
+  let salvo = { texto: r.texto, orientacoes: r.orientacoes || '' };
+  let tempoSalvar = null;
+  let salvando = null; // promessa do salvamento em andamento
+  let bloqueada = false; // true depois que a receita sai do rascunho
+  const mudou = () => texto.value !== salvo.texto || orient.value !== salvo.orientacoes;
+  async function salvarAgora() {
+    clearTimeout(tempoSalvar);
+    if (salvando) { await salvando; }
+    if (!mudou() || bloqueada) return;
+    const envio = { texto: texto.value, orientacoes: orient.value };
+    estado.textContent = 'Salvando…';
+    estado.className = 'estado-salvo';
+    salvando = (async () => {
+      try {
+        await api('PATCH', `/api/receitas/${id}`, envio);
+        salvo = envio;
+        estado.textContent = mudou() ? 'Salvando…' : 'Salvo';
+      } catch (e) {
+        if (e.status === 409) { bloqueada = true; estado.textContent = 'Não salvo'; avisos.replaceChildren(caixaMensagem('erro', e.message)); return; }
+        estado.textContent = 'Não salvo — tentando de novo…';
+        estado.className = 'estado-salvo erro';
+        tempoSalvar = setTimeout(salvarAgora, 4000);
+        return;
+      } finally { salvando = null; }
+      if (mudou()) tempoSalvar = setTimeout(salvarAgora, 1500);
+    })();
+    await salvando;
+  }
+  const agendar = () => {
+    estado.textContent = 'Salvando…';
+    estado.className = 'estado-salvo';
+    clearTimeout(tempoSalvar);
+    tempoSalvar = setTimeout(salvarAgora, 1500);
+  };
+  // Ao sair do app (ex.: abrir o WhatsApp) grava na hora.
+  const aoEsconder = () => { if (minha !== versaoTela) { document.removeEventListener('visibilitychange', aoEsconder); return; } if (document.visibilityState === 'hidden') salvarAgora(); };
+  document.addEventListener('visibilitychange', aoEsconder);
+
+  // ----- sugestões da linha atual -----
+  let tempoSug = null; let numeroSug = 0;
+  function linhaAtual() {
+    const pos = texto.selectionStart;
+    const ate = texto.value.slice(0, pos);
+    const ini = ate.lastIndexOf('\n') + 1;
+    let fim = texto.value.indexOf('\n', pos);
+    if (fim === -1) fim = texto.value.length;
+    return { ini, fim, linha: ate.slice(ini).trim() };
+  }
+  function atualizarSugestoes() {
+    clearTimeout(tempoSug);
+    const { linha } = linhaAtual();
+    if (linha.replace(/\*/g, '').length < 2) { numeroSug += 1; sugestoes.replaceChildren(); return; }
+    tempoSug = setTimeout(async () => {
+      const meu = ++numeroSug;
+      try {
+        const { sugestoes: lista } = await api('GET', '/api/sugestoes-receita?q=' + encodeURIComponent(linha));
+        if (meu !== numeroSug || minha !== versaoTela) return;
+        sugestoes.replaceChildren(...lista.slice(0, 5).map((s) => {
+          const b = el('button', { type: 'button', class: 'chip-sugestao' }, s.texto);
+          b.addEventListener('pointerdown', (ev) => ev.preventDefault()); // não fecha o teclado
+          b.addEventListener('click', () => {
+            const { ini, fim } = linhaAtual();
+            texto.setRangeText(s.texto + '\n', ini, fim < texto.value.length ? fim + 1 : fim, 'end');
+            if (!texto.value.slice(0, texto.selectionStart).endsWith('\n')) texto.setRangeText('\n', texto.selectionStart, texto.selectionStart, 'end');
+            sugestoes.replaceChildren();
+            texto.focus();
+            crescer(texto); agendar();
+          });
+          return b;
+        }));
+      } catch { sugestoes.replaceChildren(); }
+    }, 250);
+  }
+
+  texto.addEventListener('input', () => {
+    if (/[​-‍⁠﻿\r]/.test(texto.value)) { // texto colado do WhatsApp pode trazer caracteres invisíveis
+      const pos = limparInvisiveis(texto.value.slice(0, texto.selectionStart)).length;
+      texto.value = limparInvisiveis(texto.value);
+      texto.setSelectionRange(pos, pos);
+    }
+    crescer(texto); agendar(); atualizarSugestoes();
+  });
+  texto.addEventListener('click', atualizarSugestoes);
+  texto.addEventListener('keyup', (ev) => { if (ev.key.startsWith('Arrow')) atualizarSugestoes(); });
+  orient.addEventListener('input', () => { crescer(orient); agendar(); });
+  blocoOrient.addEventListener('toggle', () => crescer(orient));
+
+  const modelo = el('button', { type: 'button', class: 'secundario', id: 'modelo-linha', onclick: () => {
+    const v = texto.value;
+    texto.setRangeText((v && !v.endsWith('\n') ? '\n' : '') + MODELO_LINHA, v.length, v.length, 'end');
+    texto.focus(); crescer(texto); agendar();
+  } }, '+ Modelo de linha');
+
+  // ----- botões -----
+  const comAviso = (botao, funcao) => async () => {
+    avisos.replaceChildren();
+    botao.disabled = true;
+    try { await funcao(); } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); }
+    botao.disabled = false;
+  };
+
+  const liberar = el('button', { type: 'button', class: 'grande bloco', id: 'liberar' }, 'Liberar para impressão');
+  liberar.addEventListener('click', comAviso(liberar, async () => {
+    await salvarAgora();
+    if (!texto.value.trim()) throw new Error('Escreva a receita antes de liberar.');
+    // O CRMV vem da lista de veterinários (a sessão não o carrega).
+    const eu = (await api('GET', '/api/usuarios/veterinarios')).veterinarios.find((v) => v.id === usuario.id);
+    const crmv = eu && eu.crmv ? rotuloCrmv(eu.crmv) : 'sem CRMV cadastrado (peça ao administrador)';
+    if (!(await confirmar(`Liberar a receita de ${d.pet.nome}?`, [`Assinada por ${comTratamento(usuario.nome)} — ${crmv}.`, 'Depois de liberada não pode ser editada.'], 'Sim, liberar'))) return;
+    const nova = await api('POST', `/api/receitas/${id}/liberar`, {});
+    bloqueada = true;
+    telaReceitaLeitura(nova, minha, 'Receita liberada. A recepção foi avisada para imprimir.');
+  }));
+
+  const pedir = el('button', { type: 'button', class: 'secundario bloco', id: 'pedir' }, 'Enviar pelo WhatsApp para outro veterinário');
+  pedir.addEventListener('click', comAviso(pedir, async () => {
+    await salvarAgora();
+    const { veterinarios } = await api('GET', '/api/usuarios/veterinarios');
+    const outros = veterinarios.filter((v) => v.id !== usuario.id);
+    if (!outros.length) throw new Error('Não há outro veterinário ativo cadastrado.');
+    await dialogoPedirReceita(outros, async (vet, nota, acao) => {
+      const novo = await api('POST', `/api/receitas/${id}/pedir`, { para_usuario_id: vet.id, nota });
+      if (acao === 'copiar') {
+        const ok = await copiarTexto(`${location.origin}/#/receita/${id}`);
+        avisos.replaceChildren(caixaMensagem(ok ? 'ok' : 'erro', ok ? `Link copiado. Pedido registrado para ${vet.nome}.` : 'Não foi possível copiar. Pedido registrado; envie o link manualmente.'));
+        return;
+      }
+      avisos.replaceChildren(caixaMensagem('ok', `Pedido registrado para ${vet.nome}. Abrindo o WhatsApp…`));
+      location.href = linkWhatsapp(vet, mensagemPedido(novo, vet, nota)); // jeito que funciona no iPhone, inclusive no app instalado
+    });
+  }));
+
+  const previa = el('button', { type: 'button', class: 'secundario bloco', id: 'ver-previa' }, 'Ver como vai sair');
+  previa.addEventListener('click', comAviso(previa, async () => { await salvarAgora(); irPara(`#/receita/${id}/imprimir`); }));
+
+  const cancelar = el('button', { type: 'button', class: 'secundario perigo bloco', id: 'cancelar-receita' }, 'Cancelar receita');
+  cancelar.addEventListener('click', comAviso(cancelar, async () => {
+    if (!(await confirmar('Cancelar esta receita?', 'O rascunho será descartado.', 'Sim, cancelar receita'))) return;
+    bloqueada = true;
+    clearTimeout(tempoSalvar);
+    await api('POST', `/api/receitas/${id}/cancelar`, {});
+    irPara(`#/pet/${d.pet.id}`);
+  }));
+
+  mostrar(
+    cabecalho(),
+    el('button', { class: 'secundario voltar', type: 'button', onclick: async () => { await salvarAgora(); irPara(`#/pet/${d.pet.id}`); } }, '← Ficha do pet'),
+    cabecaReceita(d),
+    r.solicitada_por_nome && r.solicitada_a === usuario.id
+      ? el('div', { class: 'mensagem ok' }, `${r.solicitada_por_nome} pediu esta receita para você${r.nota_pedido ? ': ' + r.nota_pedido : '.'}`) : null,
+    r.solicitada_a_nome && r.solicitada_a !== usuario.id ? el('div', { class: 'mensagem ok' }, `Pedida a ${r.solicitada_a_nome}${r.nota_pedido ? ' — ' + r.nota_pedido : ''}.`) : null,
+    r.versao > 1 ? el('div', { class: 'suave' }, 'Esta é uma nova versão: ao liberar, a versão anterior é cancelada.') : null,
+    el('label', { for: 'receita-texto', class: 'rotulo-receita' }, 'Receita'),
+    texto, estado, sugestoes,
+    el('div', { class: 'acoes' }, modelo),
+    blocoOrient,
+    avisos,
+    el('div', { class: 'botoes-receita' },
+      ehVet ? liberar : el('p', { class: 'suave' }, 'Só o veterinário libera a receita. Envie para o veterinário liberar.'),
+      pedir, previa, cancelar));
+  crescer(texto); crescer(orient);
+  texto.focus();
+  texto.setSelectionRange(texto.value.length, texto.value.length);
+}
+
+// Receita já liberada (ou impressa/entregue/cancelada): só leitura.
+function telaReceitaLeitura(d, minha, mensagem = null) {
+  if (minha !== versaoTela) return;
+  const r = d.receita;
+  const podeCorrigir = PODE_ATENDER.includes(usuario.papel) && ['liberada', 'impressa', 'entregue'].includes(r.status);
+  const area = el('div');
+  const botoes = [];
+  if (['liberada', 'impressa', 'entregue'].includes(r.status)) {
+    botoes.push(el('button', { type: 'button', class: 'grande bloco', id: 'ir-imprimir', onclick: () => irPara(`#/receita/${r.id}/imprimir`) }, 'Imprimir'));
+  }
+  if (podeCorrigir) {
+    const b = el('button', { type: 'button', class: 'secundario bloco', id: 'nova-versao' }, 'Nova versão (corrigir)');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { const n = await api('POST', `/api/receitas/${r.id}/nova-versao`, {}); irPara(`#/receita/${n.receita.id}`); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); b.disabled = false; }
+    });
+    botoes.push(b);
+  }
+  if (PODE_ATENDER.includes(usuario.papel) && r.status === 'liberada') {
+    const b = el('button', { type: 'button', class: 'secundario perigo bloco', id: 'cancelar-liberada' }, 'Cancelar receita');
+    b.addEventListener('click', async () => {
+      if (!(await confirmar('Cancelar esta receita?', 'Ela sai da lista para imprimir.', 'Sim, cancelar receita'))) return;
+      try { await api('POST', `/api/receitas/${r.id}/cancelar`, {}); irPara(`#/pet/${d.pet.id}`); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); }
+    });
+    botoes.push(b);
+  }
+  mostrar(
+    cabecalho(), botaoVoltar(`#/pet/${d.pet.id}`, '← Ficha do pet'),
+    mensagem ? caixaMensagem('ok', mensagem) : null,
+    cabecaReceita(d),
+    d.veterinario ? el('p', { class: 'suave' }, `Assinada por ${comTratamento(d.veterinario.nome)}${d.veterinario.crmv ? ' — ' + rotuloCrmv(d.veterinario.crmv) : ''} · liberada ${formatarDataHora(r.liberada_em)}`) : null,
+    r.versao > 1 && d.receita_anterior ? el('p', { class: 'suave' }, `Corrige a versão ${d.receita_anterior.versao}.`) : null,
+    r.versao_seguinte && r.status !== 'cancelada' ? el('div', { class: 'mensagem ok' }, 'Existe uma nova versão desta receita.', ' ', el('a', { href: `#/receita/${r.versao_seguinte.id}` }, 'Abrir')) : null,
+    el('div', { class: 'cartao' }, el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.texto)),
+      r.orientacoes ? el('div', { class: 'folha-orientacoes' }, el('strong', {}, 'Orientações'), el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.orientacoes))) : null),
+    area, el('div', { class: 'botoes-receita' }, botoes));
+}
+
+// ---------- Página de impressão ----------
+async function telaImprimirReceita(id) {
+  const minha = versaoTela;
+  carregando();
+  let d;
+  try { d = await api('GET', `/api/receitas/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  const r = d.receita;
+  const rascunho = r.status === 'rascunho';
+  const imprimivel = ['liberada', 'impressa', 'entregue'].includes(r.status);
+  let vetPrevia = null;
+  if (rascunho && usuario.papel === 'veterinario') {
+    try { vetPrevia = (await api('GET', '/api/usuarios/veterinarios')).veterinarios.find((v) => v.id === usuario.id) || { nome: usuario.nome }; } catch { vetPrevia = { nome: usuario.nome }; }
+  }
+  const area = el('div', { class: 'so-tela' });
+  const faltaClinica = !d.clinica.clinica_endereco && !d.clinica.clinica_telefone && !d.clinica.clinica_cidade;
+  let estadoAtual = r.status;
+
+  const botoes = el('div', { class: 'acoes so-tela botoes-impressao' });
+  function desenharBotoes() {
+    botoes.replaceChildren();
+    if (imprimivel) {
+      botoes.append(el('button', { type: 'button', id: 'imprimir', onclick: perguntarDepois }, 'Imprimir'));
+      if (estadoAtual === 'liberada' || estadoAtual === 'impressa') {
+        botoes.append(el('button', { type: 'button', class: 'secundario', id: 'marcar-entregue', onclick: entregue }, 'Marcar como entregue'));
+      }
+    }
+    botoes.append(el('button', { type: 'button', class: 'secundario', onclick: () => history.length > 1 ? history.back() : irPara(rascunho ? `#/receita/${id}` : '#/hoje') }, 'Voltar'));
+  }
+  async function marcar(caminho, ok) {
+    area.replaceChildren();
+    try {
+      const novo = await api('POST', `/api/receitas/${id}/${caminho}`, {});
+      estadoAtual = novo.receita.status;
+      area.replaceChildren(caixaMensagem('ok', ok));
+      desenharBotoes();
+    } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); }
+  }
+  function entregue() { return marcar('entregue', 'Marcada como entregue.'); }
+  function perguntarDepois() {
+    window.print();
+    // No iPhone o diálogo de impressão não "espera"; por isso perguntamos em seguida.
+    area.replaceChildren(el('div', { class: 'cartao aviso' },
+      el('p', {}, el('strong', {}, 'Saiu certo?')),
+      el('div', { class: 'acoes' },
+        el('button', { type: 'button', id: 'marcar-impressa', onclick: () => marcar('impressa', 'Marcada como impressa.') }, 'Marcar como impressa'),
+        el('button', { type: 'button', class: 'secundario', onclick: () => area.replaceChildren() }, 'Ainda não'))));
+  }
+  desenharBotoes();
+
+  mostrar(
+    cabecalho(),
+    rascunho ? el('div', { class: 'mensagem erro so-tela' }, 'Prévia: esta receita ainda não foi liberada, não dá para imprimir.') : null,
+    el('div', { class: 'so-tela suave' }, `Receita de ${d.pet.nome}`, ' ', chipReceita(r.status)),
+    faltaClinica && usuario.admin ? el('p', { class: 'so-tela aviso-peso' }, 'Faltam endereço, telefone e cidade da clínica no papel. ', el('a', { href: '#/usuarios' }, 'Preencher Dados da clínica')) : null,
+    botoes, area,
+    montarFolha(dadosDaFolha(d, vetPrevia)));
+  raiz.classList.add('impressao');
+}
+
+// ---------- Lista "Para imprimir" ----------
+function cartaoParaImprimir(x) {
+  return el('article', { class: 'cartao receita-item' },
+    el('div', { class: 'receita-item-info' },
+      el('div', { class: 'atend-nome' }, x.pet.nome, x.status === 'impressa' ? el('span', { class: 'etiqueta st-impressa' }, 'Impressa') : null, x.versao > 1 ? el('span', { class: 'etiqueta' }, `Versão ${x.versao}`) : null),
+      el('div', { class: 'suave' }, `${x.veterinario ? comTratamento(x.veterinario.nome) : ''} · liberada ${formatarHora(x.liberada_em)}`),
+      el('div', { class: 'suave' }, `Tutor: ${x.tutor.nome}`),
+      x.previa ? el('div', { class: 'receita-previa' }, x.previa) : null),
+    el('button', { type: 'button', class: 'abrir-imprimir', onclick: () => irPara(`#/receita/${x.id}/imprimir`) }, 'Abrir e imprimir'));
+}
+
+async function telaReceitasImprimir() {
+  const minha = versaoTela;
+  const lista = el('div', { class: 'carregando' }, 'Carregando…');
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Para imprimir'),
+    el('button', { type: 'button', class: 'secundario bloco', id: 'colar-receita', onclick: () => irPara('#/receitas/transcrever') }, 'Colar receita do WhatsApp'), lista);
+  async function atualizar() {
+    if (minha !== versaoTela) return;
+    try {
+      const { receitas } = await api('GET', '/api/receitas?status=para_imprimir');
+      if (minha !== versaoTela) return;
+      lista.className = '';
+      lista.replaceChildren(...(receitas.length ? receitas.map(cartaoParaImprimir) : [el('p', { class: 'suave' }, 'Nenhuma receita para imprimir agora.')]));
+    } catch (e) { if (minha === versaoTela) { lista.className = ''; lista.replaceChildren(caixaMensagem('erro', e.message)); } }
+  }
+  const t = setInterval(() => { if (minha !== versaoTela) { clearInterval(t); return; } if (document.visibilityState === 'visible') atualizar(); }, 20000);
+  atualizar();
+}
+
+// ---------- Colar receita do WhatsApp (transcrição) ----------
+async function telaTranscrever(consulta) {
+  const minha = versaoTela;
+  const qs = new URLSearchParams(consulta);
+  const petId = Number(qs.get('pet')) || null;
+  const atendId = Number(qs.get('atendimento')) || null;
+  const voltarPara = petId ? `#/pet/${petId}` : '#/receitas/imprimir';
+  if (!petId) { telaEscolherPetReceita(); return; }
+  carregando();
+  let ficha; let vets; let clinica;
+  try {
+    [ficha, vets, clinica] = await Promise.all([api('GET', `/api/pets/${petId}`), api('GET', '/api/usuarios/veterinarios'), api('GET', '/api/configuracoes/clinica')]);
+  } catch (e) { if (minha === versaoTela) telaErro(e, voltarPara); return; }
+  if (minha !== versaoTela) return;
+  const { pet, tutor } = ficha;
+  const ultimo = ficha.atendimentos.find((a) => !a.sem_peso);
+  const vetsOk = vets.veterinarios;
+
+  const seletor = el('select', { id: 'transc-vet' }, el('option', { value: '' }, 'Escolha o veterinário…'), vetsOk.map((v) => el('option', { value: String(v.id) }, v.nome)));
+  const texto = el('textarea', { id: 'transc-texto', class: 'receita-texto', rows: 10, placeholder: 'Cole aqui o texto da receita', 'aria-label': 'Cole aqui o texto da receita', maxlength: 10000 });
+  const orient = el('textarea', { id: 'transc-orientacoes', class: 'receita-orient', rows: 3, maxlength: 5000, 'aria-label': 'Orientações' });
+  const previa = el('div', { class: 'previa-folha' });
+  const area = el('div');
+  const botao = el('button', { type: 'button', class: 'grande bloco', id: 'gerar-documento' }, 'Gerar documento');
+  const crescer = (t) => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; };
+
+  function desenharPrevia() {
+    const vet = vetsOk.find((v) => String(v.id) === seletor.value);
+    previa.replaceChildren(montarFolha({
+      clinica, pet: { nome: pet.nome, especie: pet.especie, raca: pet.raca, idade_anos: pet.idade_anos, idade_meses: pet.idade_meses, peso_kg: ultimo ? ultimo.peso_kg : null },
+      tutor: tutor.nome, vet: vet ? { nome: vet.nome, crmv: vet.crmv } : null, texto: texto.value, orientacoes: orient.value.trim(), data: null, segundaVia: false,
+    }));
+  }
+  const aoDigitar = (t) => () => {
+    if (/[​-‍⁠﻿\r]/.test(t.value)) t.value = limparInvisiveis(t.value);
+    crescer(t); desenharPrevia();
+  };
+  texto.addEventListener('input', aoDigitar(texto));
+  orient.addEventListener('input', aoDigitar(orient));
+  seletor.addEventListener('change', desenharPrevia);
+
+  botao.addEventListener('click', async () => {
+    area.replaceChildren();
+    if (!seletor.value) { area.replaceChildren(caixaMensagem('erro', 'Escolha o veterinário que receitou.')); return; }
+    if (!texto.value.trim()) { area.replaceChildren(caixaMensagem('erro', 'Cole o texto da receita.')); return; }
+    botao.disabled = true;
+    try {
+      const novo = await api('POST', '/api/receitas/transcrever', {
+        pet_id: pet.id, atendimento_id: atendId || undefined, veterinario_id: Number(seletor.value), texto: texto.value, orientacoes: orient.value,
+      });
+      irPara(`#/receita/${novo.receita.id}/imprimir`);
+    } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
+  });
+
+  mostrar(
+    cabecalho(), botaoVoltar(voltarPara),
+    el('h1', {}, 'Colar receita do WhatsApp'),
+    el('div', { class: 'cartao cabeca-receita' }, el('div', { class: 'atend-nome' }, pet.nome),
+      el('div', { class: 'suave' }, [ROTULO_ESPECIE[pet.especie] || pet.especie, idadeCurta(pet)].filter(Boolean).join(' · ')),
+      el('div', { class: 'suave' }, `Tutor: ${tutor.nome}`),
+      atendId ? el('div', { class: 'suave' }, 'Ligada ao atendimento de hoje.') : null),
+    el('label', { for: 'transc-vet' }, 'Veterinário que receitou'), seletor,
+    el('label', { for: 'transc-texto', class: 'rotulo-receita' }, 'Cole aqui o texto da receita'), texto,
+    el('details', { class: 'orientacoes-bloco' }, el('summary', {}, 'Orientações (opcional)'), orient),
+    el('h2', {}, 'Como vai sair'), previa, area, botao);
+  desenharPrevia();
+  texto.focus();
+}
+
+// Sem pet escolhido ainda: busca e toque.
+function telaEscolherPetReceita() {
+  const campoBusca = el('input', { id: 'q', type: 'search', class: 'busca-grande', placeholder: 'Nome do pet, do tutor ou telefone', autocomplete: 'off', 'aria-label': 'Buscar o paciente' });
+  const area = el('div', { id: 'resultados' });
+  mostrar(cabecalho(), botaoVoltar('#/receitas/imprimir'), el('h1', {}, 'Colar receita do WhatsApp'), el('p', { class: 'suave' }, 'Primeiro, escolha o paciente.'), campoBusca, area);
+  let tempo = null; let numero = 0;
+  async function buscarAgora() {
+    const q = campoBusca.value.trim();
+    const meu = ++numero;
+    if (q.length < 2) { area.replaceChildren(); return; }
+    try {
+      const { resultados } = await api('GET', '/api/busca?q=' + encodeURIComponent(q));
+      if (meu !== numero) return;
+      const pets = resultados.filter((r) => r.tipo === 'pet');
+      area.replaceChildren(...(pets.length
+        ? pets.map((r) => el('button', { type: 'button', class: 'resultado', onclick: () => irPara(`#/receitas/transcrever?pet=${r.pet.id}`) },
+          el('strong', { class: 'resultado-nome' }, r.pet.nome), el('span', {}, ROTULO_ESPECIE[r.pet.especie] || r.pet.especie), el('span', { class: 'suave' }, `Tutor: ${r.tutor.nome}`)))
+        : [el('p', { class: 'suave' }, 'Nenhum paciente encontrado.')]));
+    } catch (e) { if (meu === numero) area.replaceChildren(caixaMensagem('erro', e.message)); }
+  }
+  campoBusca.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(buscarAgora, 300); });
+  campoBusca.focus();
+}
+
+// Cria (ou abre o rascunho existente de) uma receita para o atendimento / pet.
+async function abrirNovaReceita(corpo) {
+  const r = await api('POST', '/api/receitas', corpo);
+  irPara(`#/receita/${r.receita.id}`);
+}
+
+// Lista de receitas na ficha do pet.
+function listaReceitasPet(receitas) {
+  if (!receitas.length) return el('p', { class: 'suave' }, 'Nenhuma receita ainda.');
+  return el('ul', { class: 'lista-simples' }, receitas.map((x) => el('li', {},
+    el('button', { type: 'button', class: 'resultado receita-linha', onclick: () => irPara(`#/receita/${x.id}`) },
+      el('div', { class: 'hist-linha' }, chipReceita(x.status), x.versao > 1 ? el('span', { class: 'etiqueta' }, `Versão ${x.versao}`) : null,
+        el('span', { class: 'suave' }, formatarDia(x.liberada_em || x.criado_em))),
+      x.previa ? el('div', {}, x.previa) : el('div', { class: 'suave' }, '(vazia)'),
+      el('div', { class: 'suave' }, [x.veterinario ? comTratamento(x.veterinario) : null, x.transcrita_por ? `transcrita por ${x.transcrita_por}` : null].filter(Boolean).join(' · '))))));
+}
+
+// Formulários de Usuários: dados da clínica.
+function secaoDadosClinica() {
+  const caixa = el('div', { class: 'cartao' }, el('h2', {}, 'Dados da clínica'), el('p', { class: 'carregando' }, 'Carregando…'));
+  (async () => {
+    try {
+      const c = await api('GET', '/api/configuracoes/clinica');
+      const form = formulario(async (v) => {
+        await api('PATCH', '/api/configuracoes/clinica', { clinica_nome: v.clinica_nome, clinica_endereco: v.clinica_endereco, clinica_telefone: v.clinica_telefone, clinica_cidade: v.clinica_cidade });
+        form.querySelector('.ok-clinica').replaceChildren(caixaMensagem('ok', 'Dados da clínica salvos.'));
+        form.querySelector('button[type="submit"]').disabled = false;
+      },
+        el('p', { class: 'suave' }, 'Aparecem no alto da receita impressa.'),
+        campo('Nome da clínica', 'clinica_nome', { required: true, value: c.clinica_nome }),
+        campo('Endereço', 'clinica_endereco', { value: c.clinica_endereco, autocomplete: 'off' }),
+        campo('Telefone', 'clinica_telefone', { value: c.clinica_telefone, type: 'tel', autocomplete: 'off' }),
+        campo('Cidade (aparece na data)', 'clinica_cidade', { value: c.clinica_cidade, autocomplete: 'off' }),
+        el('div', { class: 'ok-clinica' }),
+        el('button', { type: 'submit' }, 'Salvar dados da clínica'));
+      caixa.replaceChildren(el('h2', {}, 'Dados da clínica'), form);
+    } catch (e) { caixa.replaceChildren(el('h2', {}, 'Dados da clínica'), caixaMensagem('erro', e.message)); }
+  })();
+  return caixa;
+}
+
+
 // ---------- roteador ----------
+// Tela "Notificações": ativar, testar ou desativar neste aparelho.
+async function telaNotificacoes() {
+  const minha = versaoTela;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Notificações'), el('p', { class: 'carregando' }, 'Carregando…'));
+  const cartao = await cartaoNotificacoes();
+  if (minha !== versaoTela) return;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Notificações'), cartao,
+    el('p', { class: 'suave' }, 'Cada aparelho é ativado separadamente (iPhone, computador da recepção etc.).'));
+}
+
 function rotear() {
   versaoTela++;
   if (!usuario) return; // sem login, quem manda é a tela de entrada
@@ -1228,7 +1932,11 @@ function rotear() {
   if (rota === 'busca') { const qs = new URLSearchParams(consulta); return telaBusca(qs.get('q') || '', qs.get('modo') || ''); }
   if (rota === 'chegada' && n) return telaChegada(n);
   if (rota === 'atendimento' && n && acao === 'editar') return telaEditarAtendimento(n);
+  if (rota === 'receita' && n) return acao === 'imprimir' ? telaImprimirReceita(n) : telaReceita(n);
+  if (rota === 'receitas' && partes[1] === 'imprimir') return telaReceitasImprimir();
+  if (rota === 'receitas' && partes[1] === 'transcrever') return telaTranscrever(consulta);
   if (rota === 'cadastro') return telaCadastro();
+  if (rota === 'notificacoes') return telaNotificacoes();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();
   if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n);
   if (rota === 'tutor' && n) {
@@ -1250,8 +1958,7 @@ async function iniciar() {
       usuario = await api('GET', '/api/eu');
       rotear();
     } catch (e) {
-      if (e.status === 401) telaEntrar();
-      else throw e;
+      if (e.status === 401) { lembrarDestino(); telaEntrar(); } else throw e;
     }
   } catch (e) {
     mostrar(caixaMensagem('erro', e.message), el('button', { type: 'button', onclick: () => location.reload() }, 'Tentar de novo'));

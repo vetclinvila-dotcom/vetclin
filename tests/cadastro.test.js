@@ -366,11 +366,11 @@ test('apagar dados de teste: só TESTE como palavra, com atendimentos e pedidos'
     b.prepare(`INSERT INTO pagamentos (pedido_id, forma, valor_centavos, recebido_por, recebido_em) VALUES (?, 'pix', 10000, 1, 'x')`).run(p);
   }
   const previa = await chamar(env, 'GET', '/api/admin/dados-teste', { cookie: admin });
-  assert.deepEqual(previa.dados, { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, fotos: 0 });
+  assert.deepEqual(previa.dados, { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, receitas: 0, fotos: 0 });
 
   const r = await chamar(env, 'POST', '/api/admin/apagar-dados-teste', { cookie: admin, corpo: { confirmacao: 'APAGAR' } });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.dados.apagados, { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, fotos: 0 });
+  assert.deepEqual(r.dados.apagados, { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, receitas: 0, fotos: 0 });
   const nomes = (t) => b.prepare(`SELECT nome FROM ${t} ORDER BY nome`).all().map((x) => x.nome);
   assert.deepEqual(nomes('tutores'), ['Ana Real', 'Pedro Real', 'Testolin']);
   assert.deepEqual(nomes('pets'), ['Fido', 'Testemunha']);
@@ -381,7 +381,7 @@ test('apagar dados de teste: só TESTE como palavra, com atendimentos e pedidos'
   assert.equal(b.prepare('PRAGMA foreign_key_check').all().length, 0);
   const log = await acoes(env, 'apagar_dados_teste');
   assert.equal(log.length, 1);
-  assert.deepEqual(JSON.parse(log[0].depois), { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, fotos: 0 });
+  assert.deepEqual(JSON.parse(log[0].depois), { tutores: 1, pets: 3, atendimentos: 2, pedidos: 2, receitas: 0, fotos: 0 });
   void real2;
 });
 

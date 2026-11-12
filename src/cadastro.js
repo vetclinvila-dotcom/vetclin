@@ -75,7 +75,7 @@ function nascimentoValido(valor) {
 }
 
 // Escapa % e _ para a busca LIKE tratar como letras comuns.
-function likeSeguro(t) {
+export function likeSeguro(t) {
   return '%' + t.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
 }
 
@@ -313,7 +313,7 @@ async function petsCriar(request, env) {
 }
 
 async function petsVer(request, env, id) {
-  await exigirLogin(request, env);
+  const u = await exigirLogin(request, env);
   const p = await lerPetPorId(env, id);
   const t = await buscarTutor(env, p.tutor_id);
   // Histórico de atendimentos (o peso de cada visita é o dado mais importante para os médicos).
@@ -323,10 +323,19 @@ async function petsVer(request, env, id) {
       WHERE a.pet_id = ? ORDER BY a.chegada_em DESC, a.id DESC LIMIT 50`
   ).bind(id).all();
   const aberto = await env.DB.prepare(`SELECT id, status FROM atendimentos WHERE pet_id = ? AND status IN ('chegou','em_atendimento')`).bind(id).first();
+  // Receitas do pet (as 20 últimas). A recepção nunca vê rascunhos nem canceladas.
+  const soLiberadas = u.papel === 'recepcao' ? `AND r.status IN ('liberada','impressa','entregue')` : '';
+  const { results: receitas } = await env.DB.prepare(
+    `SELECT r.id, r.status, r.versao, r.liberada_em, r.criado_em, v.nome AS vet_nome, r.origem, cp.nome AS criado_por_nome, substr(r.texto, 1, 300) AS inicio
+       FROM receitas r LEFT JOIN usuarios v ON v.id = r.veterinario_id LEFT JOIN usuarios cp ON cp.id = r.criado_por
+      WHERE r.pet_id = ? ${soLiberadas} ORDER BY r.id DESC LIMIT 20`
+  ).bind(id).all();
+  const previa = (t) => { const l = String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x) || ''; return l.length > 80 ? l.slice(0, 80) + '…' : l; };
   return json({
     pet: petCompleto(p),
     tutor: { id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp, final_telefone: finalTelefone(t.whatsapp), mesclado_em_id: t.mesclado_em_id ?? null },
     atendimento_aberto: aberto ? { id: aberto.id, status: aberto.status } : null,
+    receitas: receitas.map((r) => ({ id: r.id, status: r.status, versao: r.versao, liberada_em: r.liberada_em ?? null, criado_em: r.criado_em, veterinario: r.vet_nome ?? null, origem: r.origem, transcrita_por: r.origem === 'transcrita' ? r.criado_por_nome : null, previa: previa(r.inicio) })),
     atendimentos: results.map((a) => ({
       id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1,
       peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
@@ -472,6 +481,7 @@ async function tutoresMesclar(request, env, id) {
 const ONDE_TUTOR_TESTE = `(nome_busca = 'teste' OR nome_busca LIKE 'teste %')`;
 const PETS_TESTE = `SELECT id FROM pets WHERE ${ONDE_TUTOR_TESTE} OR tutor_id IN (SELECT id FROM tutores WHERE ${ONDE_TUTOR_TESTE})`;
 const ATEND_TESTE = `SELECT id FROM atendimentos WHERE pet_id IN (${PETS_TESTE})`;
+const RECEITAS_TESTE = `SELECT id FROM receitas WHERE pet_id IN (${PETS_TESTE}) OR atendimento_id IN (${ATEND_TESTE})`;
 const PEDIDOS_TESTE = `SELECT id FROM pedidos WHERE atendimento_id IN (${ATEND_TESTE})`;
 
 // Fotos que só os dados de teste usam (se algum cadastro real usa a foto, ela fica).
@@ -495,6 +505,7 @@ async function contarDadosTeste(env) {
     pets: await n(`SELECT COUNT(*) AS n FROM (${PETS_TESTE})`),
     atendimentos: await n(`SELECT COUNT(*) AS n FROM (${ATEND_TESTE})`),
     pedidos: await n(`SELECT COUNT(*) AS n FROM (${PEDIDOS_TESTE})`),
+    receitas: await n(`SELECT COUNT(*) AS n FROM (${RECEITAS_TESTE})`),
     fotos: (await idsFotosTeste(env)).length,
   };
 }
@@ -522,6 +533,10 @@ async function dadosTesteApagar(request, env) {
     env.DB.prepare(`DELETE FROM pagamentos WHERE pedido_id IN (${PEDIDOS_TESTE})`),
     env.DB.prepare(`DELETE FROM itens_pedido WHERE pedido_id IN (${PEDIDOS_TESTE})`),
     env.DB.prepare(`DELETE FROM pedidos WHERE id IN (${PEDIDOS_TESTE})`),
+    // Receitas apontam para pets e atendimentos (e umas para as outras, nas versões): soltamos
+    // as ligações entre elas e só então apagamos.
+    env.DB.prepare(`UPDATE receitas SET receita_anterior_id = NULL WHERE id IN (${RECEITAS_TESTE})`),
+    env.DB.prepare(`DELETE FROM receitas WHERE id IN (${RECEITAS_TESTE})`),
     env.DB.prepare(`DELETE FROM atendimentos WHERE id IN (${ATEND_TESTE})`),
     env.DB.prepare(`DELETE FROM pets WHERE id IN (${PETS_TESTE})`),
     env.DB.prepare(`DELETE FROM tutores WHERE ${ONDE_TUTOR_TESTE}`),

@@ -6,9 +6,11 @@ import {
   hashSenha, lerSessao, normalizarLogin, validarSenha, verificarSenha,
 } from './auth.js';
 import { ErroHttp, agoraISO, comparacaoSegura, ipDe, json, lerJson, registrarAcao, texto } from './util.js';
-import { ROTAS_CADASTRO } from './cadastro.js';
+import { ROTAS_CADASTRO, normalizarWhatsapp } from './cadastro.js';
 import { ROTAS_ATENDIMENTOS } from './atendimentos.js';
 import { ROTAS_FOTOS } from './fotos.js';
+import { ROTAS_RECEITAS } from './receitas.js';
+import { ROTAS_PUSH } from './notificacoes.js';
 
 const JANELA_MS = 15 * 60 * 1000; // 15 minutos
 const LIMITE_POR_LOGIN = 5;
@@ -24,7 +26,7 @@ async function contarUsuarios(env) {
 
 // Mostra ao front só os dados seguros de um usuário.
 function usuarioPublico(u) {
-  return { id: u.id, nome: u.nome, login: u.login, papel: u.papel, admin: u.admin === 1 || u.admin === true, crmv: u.crmv ?? null, ativo: u.ativo === undefined ? true : u.ativo === 1 };
+  return { id: u.id, nome: u.nome, login: u.login, papel: u.papel, admin: u.admin === 1 || u.admin === true, crmv: u.crmv ?? null, whatsapp: u.whatsapp ?? null, ativo: u.ativo === undefined ? true : u.ativo === 1 };
 }
 
 async function contarFalhas(env, coluna, valor) {
@@ -52,6 +54,12 @@ async function verificarLimite(env, login, ip) {
 async function respostaComSessao(env, request, usuarioId, dados, status = 200) {
   const token = await criarSessao(env, usuarioId, request.headers.get('User-Agent'));
   return json(dados, status, { 'Set-Cookie': cookieSessao(token) });
+}
+
+// WhatsApp opcional do usuário: vazio vira null; senão vira E.164 (+5571999998888).
+function lerWhatsappUsuario(valor) {
+  const t = String(valor ?? '').trim();
+  return t ? normalizarWhatsapp(t).e164 : null;
 }
 
 // ---------- rotas ----------
@@ -130,7 +138,7 @@ async function eu(request, env) {
 
 async function usuariosListar(request, env) {
   await exigirAdmin(request, env);
-  const { results } = await env.DB.prepare('SELECT id, nome, login, papel, admin, crmv, ativo FROM usuarios ORDER BY nome').all();
+  const { results } = await env.DB.prepare('SELECT id, nome, login, papel, admin, crmv, whatsapp, ativo FROM usuarios ORDER BY nome').all();
   return json({ usuarios: results.map(usuarioPublico) });
 }
 
@@ -144,15 +152,16 @@ async function usuariosCriar(request, env) {
   validarSenha(c.senha);
   const crmv = texto(c.crmv, 'CRMV', { obrigatorio: false, max: 30 }) || null;
   const admin = c.admin ? 1 : 0;
+  const whatsapp = lerWhatsappUsuario(c.whatsapp);
   const agora = agoraISO();
   try {
     const r = await env.DB.prepare(
-      `INSERT INTO usuarios (nome, login, senha_hash, papel, admin, crmv, ativo, criado_em, atualizado_em)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
-    ).bind(nome, login, await hashSenha(c.senha), c.papel, admin, crmv, agora, agora).run();
+      `INSERT INTO usuarios (nome, login, senha_hash, papel, admin, crmv, whatsapp, ativo, criado_em, atualizado_em)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    ).bind(nome, login, await hashSenha(c.senha), c.papel, admin, crmv, whatsapp, agora, agora).run();
     const id = r.meta.last_row_id;
-    await registrarAcao(env, { usuarioId: adm.id, acao: 'criar_usuario', entidade: 'usuarios', entidadeId: id, depois: { nome, login, papel: c.papel, admin: !!admin, crmv }, ip: ipDe(request) });
-    return json({ id, nome, login, papel: c.papel, admin: !!admin, crmv, ativo: true }, 201);
+    await registrarAcao(env, { usuarioId: adm.id, acao: 'criar_usuario', entidade: 'usuarios', entidadeId: id, depois: { nome, login, papel: c.papel, admin: !!admin, crmv, whatsapp }, ip: ipDe(request) });
+    return json({ id, nome, login, papel: c.papel, admin: !!admin, crmv, whatsapp, ativo: true }, 201);
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) throw new ErroHttp(409, 'Já existe um usuário com esse login.');
     throw e;
@@ -165,7 +174,7 @@ async function usuariosAlterar(request, env, id) {
   const antes = await env.DB.prepare('SELECT * FROM usuarios WHERE id = ?').bind(id).first();
   if (!antes) throw new ErroHttp(404, 'Usuário não encontrado.');
 
-  const novo = { nome: antes.nome, papel: antes.papel, admin: antes.admin, ativo: antes.ativo, crmv: antes.crmv, senha_hash: antes.senha_hash };
+  const novo = { nome: antes.nome, papel: antes.papel, admin: antes.admin, ativo: antes.ativo, crmv: antes.crmv, whatsapp: antes.whatsapp ?? null, senha_hash: antes.senha_hash };
   if (c.nome !== undefined) novo.nome = texto(c.nome, 'nome');
   if (c.papel !== undefined) {
     if (!PAPEIS.includes(c.papel)) throw new ErroHttp(400, 'Escolha o papel: recepção, veterinário ou suporte.');
@@ -174,6 +183,7 @@ async function usuariosAlterar(request, env, id) {
   if (c.admin !== undefined) novo.admin = c.admin ? 1 : 0;
   if (c.ativo !== undefined) novo.ativo = c.ativo ? 1 : 0;
   if (c.crmv !== undefined) novo.crmv = texto(c.crmv, 'CRMV', { obrigatorio: false, max: 30 }) || null;
+  if (c.whatsapp !== undefined) novo.whatsapp = lerWhatsappUsuario(c.whatsapp);
   const trocouSenha = c.senha !== undefined && c.senha !== '';
   if (trocouSenha) {
     validarSenha(c.senha);
@@ -188,14 +198,14 @@ async function usuariosAlterar(request, env, id) {
     if (o.n === 0) throw new ErroHttp(400, 'Este é o último administrador ativo. Não é possível desativá-lo nem remover o acesso de administrador.');
   }
 
-  await env.DB.prepare('UPDATE usuarios SET nome = ?, papel = ?, admin = ?, ativo = ?, crmv = ?, senha_hash = ?, atualizado_em = ? WHERE id = ?')
-    .bind(novo.nome, novo.papel, novo.admin, novo.ativo, novo.crmv, novo.senha_hash, agoraISO(), id).run();
+  await env.DB.prepare('UPDATE usuarios SET nome = ?, papel = ?, admin = ?, ativo = ?, crmv = ?, whatsapp = ?, senha_hash = ?, atualizado_em = ? WHERE id = ?')
+    .bind(novo.nome, novo.papel, novo.admin, novo.ativo, novo.crmv, novo.whatsapp, novo.senha_hash, agoraISO(), id).run();
   // Se desativou ou trocou a senha, derruba as sessões abertas dessa pessoa.
   if (novo.ativo === 0 || trocouSenha) {
     await env.DB.prepare('DELETE FROM sessoes WHERE usuario_id = ?').bind(id).run();
   }
 
-  const resumo = (u) => ({ nome: u.nome, papel: u.papel, admin: u.admin === 1, ativo: u.ativo === 1, crmv: u.crmv });
+  const resumo = (u) => ({ nome: u.nome, papel: u.papel, admin: u.admin === 1, ativo: u.ativo === 1, crmv: u.crmv, whatsapp: u.whatsapp ?? null });
   await registrarAcao(env, { usuarioId: adm.id, acao: 'alterar_usuario', entidade: 'usuarios', entidadeId: id, antes: resumo(antes), depois: { ...resumo(novo), senha_alterada: trocouSenha }, ip: ipDe(request) });
   return json(usuarioPublico({ ...novo, id, login: antes.login }));
 }
@@ -214,6 +224,8 @@ const ROTAS = [
   ...ROTAS_CADASTRO,
   ...ROTAS_ATENDIMENTOS,
   ...ROTAS_FOTOS,
+  ...ROTAS_RECEITAS,
+  ...ROTAS_PUSH,
 ].map(([metodo, caminho, funcao]) => ({
   metodo, funcao,
   padrao: new RegExp('^' + caminho.replace(/:[a-z]+/g, '([^/]+)') + '/?$'),
