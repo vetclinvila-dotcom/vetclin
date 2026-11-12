@@ -38,7 +38,7 @@ h2 { font-size: 1.3rem; margin: 24px 0 12px; }
 .suave { color: var(--cor-texto-suave); }
 
 label { display: block; font-weight: 600; margin: 14px 0 6px; }
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 48px;
   padding: 10px 12px;
@@ -50,7 +50,7 @@ input, select {
 }
 input[type="checkbox"] { width: 24px; min-height: 24px; height: 24px; vertical-align: middle; margin-right: 8px; }
 label.linha { display: flex; align-items: center; font-weight: 500; min-height: 48px; }
-input:focus, select:focus, button:focus-visible, a:focus-visible {
+input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible {
   outline: 3px solid #5eead4;
   outline-offset: 2px;
   border-color: var(--cor-destaque);
@@ -88,7 +88,48 @@ form button[type="submit"] { width: 100%; margin-top: 20px; }
 
 .acoes { display: flex; gap: 12px; flex-wrap: wrap; }
 
+.marca { text-decoration: none; }
+textarea { width: 100%; padding: 10px 12px; font: inherit; color: inherit; border: 2px solid var(--cor-borda); border-radius: 10px; }
+button.voltar { margin-bottom: 8px; }
+
+/* Botões grandes da tela inicial */
+.acoes-grandes { display: grid; gap: 12px; grid-template-columns: 1fr; margin-bottom: 16px; }
+button.grande { min-height: 72px; font-size: 1.3rem; }
+
+/* Campo de busca grande */
+input.busca-grande { min-height: 60px; font-size: 1.2rem; margin-bottom: 16px; }
+
+/* Cartão de resultado (botão que ocupa a linha toda) */
+button.resultado {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%;
+  text-align: left; margin-bottom: 10px; padding: 14px 16px; min-height: 64px;
+  color: var(--cor-texto); background: var(--cor-cartao); border: 1px solid var(--cor-borda); font-weight: 400;
+}
+button.resultado:hover { background: #ecfdf5; }
+.resultado-nome { font-size: 1.2rem; }
+.vazio { text-align: center; }
+
+/* Escolha Cão / Gato / Outro */
+.grupo-opcoes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+button.opcao { color: var(--cor-destaque-escura); background: #fff; border-color: var(--cor-borda); min-height: 56px; padding: 8px; }
+button.opcao:hover { background: #ecfdf5; }
+button.opcao[aria-checked="true"] { color: #fff; background: var(--cor-destaque); border-color: var(--cor-destaque-escura); }
+
+.aviso { border-color: #f59e0b; background: #fffbeb; }
+.aviso .cartao { background: #fff; }
+.aviso button { margin: 4px 0; }
+.etiqueta.alerta { background: #fef3c7; color: #92400e; margin-left: 8px; }
+.nome-pet { font-size: 2.2rem; line-height: 1.15; }
+.lista-simples { list-style: none; padding: 0; margin: 0; }
+.lista-simples li { padding: 10px 0; border-bottom: 1px solid var(--cor-borda); }
+.lista-simples li:last-child { border-bottom: 0; }
+
+dialog.confirmacao { max-width: 440px; width: calc(100% - 32px); border: 0; border-radius: var(--raio); padding: 20px; }
+dialog.confirmacao::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.confirmacao h2 { margin-top: 0; }
+
 @media (min-width: 720px) {
   #app { padding-top: 32px; }
   form button[type="submit"] { width: auto; }
+  .acoes-grandes { grid-template-columns: 1fr 1fr; }
 }

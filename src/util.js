@@ -62,24 +62,37 @@ export function ipDe(request) {
   return request.headers.get('CF-Connecting-IP') || null;
 }
 
-// Grava no registro de ações quem fez o quê.
+// Prepara (sem executar) o comando que grava no registro de ações.
+// Útil para incluir o registro dentro de um "batch" junto com a alteração.
 // NUNCA passe senhas ou hashes em "antes"/"depois".
-export async function registrarAcao(env, { usuarioId = null, acao, entidade, entidadeId = null, antes = null, depois = null, ip = null }) {
-  await env.DB.prepare(
+export function prepararAcao(env, { usuarioId = null, acao, entidade, entidadeId = null, antes = null, depois = null, ip = null }) {
+  return env.DB.prepare(
     `INSERT INTO registro_acoes (usuario_id, acao, entidade, entidade_id, antes, depois, em, ip)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      usuarioId,
-      acao,
-      entidade,
-      entidadeId,
-      antes === null ? null : JSON.stringify(antes),
-      depois === null ? null : JSON.stringify(depois),
-      agoraISO(),
-      ip
-    )
-    .run();
+  ).bind(
+    usuarioId,
+    acao,
+    entidade,
+    entidadeId,
+    antes === null ? null : JSON.stringify(antes),
+    depois === null ? null : JSON.stringify(depois),
+    agoraISO(),
+    ip
+  );
+}
+
+// Grava no registro de ações quem fez o quê.
+// NUNCA passe senhas ou hashes em "antes"/"depois".
+export async function registrarAcao(env, dados) {
+  await prepararAcao(env, dados).run();
+}
+
+// Valida um campo de texto: tira espaços das pontas e confere tamanho.
+export function texto(valor, campo, { obrigatorio = true, max = 120 } = {}) {
+  const t = String(valor ?? '').trim();
+  if (obrigatorio && !t) throw new ErroHttp(400, `Preencha o campo ${campo}.`);
+  if (t.length > max) throw new ErroHttp(400, `O campo ${campo} está muito longo.`);
+  return t;
 }
 
 // Gera o próximo código: T-000001 (tutor) ou P-000001 (pet).

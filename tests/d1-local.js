@@ -29,13 +29,38 @@ class Comando {
   }
 }
 
-export function criarBancoLocal() {
+// Cria o banco de testes (em memória), com chaves estrangeiras LIGADAS
+// (como no D1 de verdade). Cada migração roda dentro de uma transação.
+// Opções (opcional):
+//   { ate: '0001' }  aplica só as migrações até esse prefixo (inclusive);
+//                    as demais ficam esperando em banco.migrarRestante().
+// Aceita também um texto qualquer (ignorado), por compatibilidade.
+export function criarBancoLocal(opcoes = {}) {
+  const ate = typeof opcoes === 'object' && opcoes ? opcoes.ate : undefined;
   const banco = new DatabaseSync(':memory:');
-  for (const arquivo of readdirSync(pastaMigracoes).filter((f) => f.endsWith('.sql')).sort()) {
-    banco.exec(readFileSync(path.join(pastaMigracoes, arquivo), 'utf8'));
+  banco.exec('PRAGMA foreign_keys = ON');
+  const arquivos = readdirSync(pastaMigracoes).filter((f) => f.endsWith('.sql')).sort();
+  const pendentes = [];
+  let parou = false;
+  const aplicar = (arquivo) => {
+    banco.exec('BEGIN');
+    try {
+      banco.exec(readFileSync(path.join(pastaMigracoes, arquivo), 'utf8'));
+      banco.exec('COMMIT');
+    } catch (e) {
+      banco.exec('ROLLBACK');
+      throw new Error(`Falha na migração ${arquivo}: ${e.message}`);
+    }
+  };
+  for (const arquivo of arquivos) {
+    if (parou) { pendentes.push(arquivo); continue; }
+    aplicar(arquivo);
+    if (ate && arquivo.startsWith(ate)) parou = true;
   }
   return {
     bruto: banco,
+    // Aplica as migrações que ficaram de fora por causa da opção "ate".
+    migrarRestante() { while (pendentes.length) aplicar(pendentes.shift()); },
     prepare: (sql) => new Comando(banco, sql),
     async batch(comandos) {
       const saidas = [];

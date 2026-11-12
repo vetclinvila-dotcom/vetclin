@@ -5,22 +5,16 @@ import {
   apagarSessao, cookieSessao, criarSessao, exigirAdmin, exigirLogin,
   hashSenha, lerSessao, normalizarLogin, validarSenha, verificarSenha,
 } from './auth.js';
-import { ErroHttp, agoraISO, comparacaoSegura, ipDe, json, lerJson, registrarAcao } from './util.js';
+import { ErroHttp, agoraISO, comparacaoSegura, ipDe, json, lerJson, registrarAcao, texto } from './util.js';
+import { ROTAS_CADASTRO } from './cadastro.js';
 
 const JANELA_MS = 15 * 60 * 1000; // 15 minutos
 const LIMITE_POR_LOGIN = 5;
 const LIMITE_POR_IP = 20;
-const PAPEIS = ['recepcao', 'veterinario'];
+const PAPEIS = ['recepcao', 'veterinario', 'suporte'];
 const LOGIN_VALIDO = /^[a-z0-9._-]{3,32}$/;
 
 // ---------- apoio ----------
-function texto(valor, campo, { obrigatorio = true, max = 120 } = {}) {
-  const t = String(valor ?? '').trim();
-  if (obrigatorio && !t) throw new ErroHttp(400, `Preencha o campo ${campo}.`);
-  if (t.length > max) throw new ErroHttp(400, `O campo ${campo} está muito longo.`);
-  return t;
-}
-
 async function contarUsuarios(env) {
   const l = await env.DB.prepare('SELECT COUNT(*) AS n FROM usuarios').first();
   return l.n;
@@ -144,7 +138,7 @@ async function usuariosCriar(request, env) {
   const nome = texto(c.nome, 'nome');
   const login = normalizarLogin(c.login);
   if (!LOGIN_VALIDO.test(login)) throw new ErroHttp(400, 'O login deve ter de 3 a 32 letras, números, ponto, hífen ou sublinhado.');
-  if (!PAPEIS.includes(c.papel)) throw new ErroHttp(400, 'Escolha o papel: recepção ou veterinário.');
+  if (!PAPEIS.includes(c.papel)) throw new ErroHttp(400, 'Escolha o papel: recepção, veterinário ou suporte.');
   validarSenha(c.senha);
   const crmv = texto(c.crmv, 'CRMV', { obrigatorio: false, max: 30 }) || null;
   const admin = c.admin ? 1 : 0;
@@ -172,7 +166,7 @@ async function usuariosAlterar(request, env, id) {
   const novo = { nome: antes.nome, papel: antes.papel, admin: antes.admin, ativo: antes.ativo, crmv: antes.crmv, senha_hash: antes.senha_hash };
   if (c.nome !== undefined) novo.nome = texto(c.nome, 'nome');
   if (c.papel !== undefined) {
-    if (!PAPEIS.includes(c.papel)) throw new ErroHttp(400, 'Escolha o papel: recepção ou veterinário.');
+    if (!PAPEIS.includes(c.papel)) throw new ErroHttp(400, 'Escolha o papel: recepção, veterinário ou suporte.');
     novo.papel = c.papel;
   }
   if (c.admin !== undefined) novo.admin = c.admin ? 1 : 0;
@@ -215,6 +209,7 @@ const ROTAS = [
   ['GET', '/api/usuarios', usuariosListar],
   ['POST', '/api/usuarios', usuariosCriar],
   ['PATCH', '/api/usuarios/:id', usuariosAlterar],
+  ...ROTAS_CADASTRO,
 ].map(([metodo, caminho, funcao]) => ({
   metodo, funcao,
   padrao: new RegExp('^' + caminho.replace(/:[a-z]+/g, '([^/]+)') + '/?$'),

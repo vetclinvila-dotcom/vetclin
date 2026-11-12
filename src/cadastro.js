@@ -1,0 +1,494 @@
+// Cadastro de tutores e pets: busca, criação, edição, junção e limpeza de testes.
+import { exigirAdmin, exigirLogin } from './auth.js';
+import { ErroHttp, agoraISO, ipDe, json, lerJson, prepararAcao, proximoCodigo, registrarAcao, texto } from './util.js';
+
+const ESPECIES = ['cao', 'gato', 'outro'];
+const SEXOS = ['macho', 'femea'];
+
+// ---------- funções de apoio (também usadas nos testes) ----------
+
+// Texto para busca: sem acentos, minúsculas, sem espaços sobrando.
+export function normalizarBusca(entrada) {
+  return String(entrada ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Telefone brasileiro -> { e164: '+5571999998888', digitos: '5571999998888' }.
+export function normalizarWhatsapp(entrada) {
+  const erro = new ErroHttp(400, 'Telefone inválido. Use DDD + número, ex.: (71) 99999-8888.');
+  let d = String(entrada ?? '').replace(/\D/g, '');
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) {
+    // já tem o código do país
+  } else if (d.length === 10 || d.length === 11) {
+    d = '55' + d;
+  } else {
+    throw erro;
+  }
+  const ddd = d.slice(2, 4);
+  if (!/^[1-9][1-9]$/.test(ddd)) throw erro; // DDD de 11 a 99, sem zero
+  const local = d.slice(4);
+  const celular = local.length === 9 && local[0] === '9';
+  const fixo = local.length === 8 && /^[2-5]/.test(local);
+  if (!celular && !fixo) throw erro;
+  return { e164: '+' + d, digitos: d };
+}
+
+// Últimos 4 números do telefone (é só isso que a busca mostra).
+export function finalTelefone(e164) {
+  const d = String(e164 ?? '').replace(/\D/g, '');
+  return d.length >= 4 ? d.slice(-4) : '';
+}
+
+// Origem do cadastro conforme quem está logado.
+function origemDe(usuario) {
+  return usuario.papel === 'recepcao' ? 'recepcao' : 'veterinario';
+}
+
+// Inteiro opcional dentro de um intervalo (vazio vira null).
+function inteiro(valor, campo, min, max) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  const n = Number(valor);
+  if (!Number.isInteger(n) || n < min || n > max) throw new ErroHttp(400, `O campo ${campo} deve ser um número de ${min} a ${max}.`);
+  return n;
+}
+
+function especieValida(valor) {
+  const e = String(valor ?? '').trim().toLowerCase();
+  if (!ESPECIES.includes(e)) throw new ErroHttp(400, 'Escolha a espécie: cão, gato ou outro.');
+  return e;
+}
+
+function sexoValido(valor) {
+  const s = String(valor ?? '').trim().toLowerCase();
+  if (!s) return null;
+  if (!SEXOS.includes(s)) throw new ErroHttp(400, 'Sexo deve ser macho ou fêmea.');
+  return s;
+}
+
+function nascimentoValido(valor) {
+  const n = String(valor ?? '').trim();
+  if (!n) return null;
+  if (!/^\d{4}-\d{2}(-\d{2})?$/.test(n)) throw new ErroHttp(400, 'Data de nascimento inválida.');
+  return n;
+}
+
+// Escapa % e _ para a busca LIKE tratar como letras comuns.
+function likeSeguro(t) {
+  return '%' + t.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+}
+
+// ---------- leitura de dados ----------
+function tutorCompleto(t) {
+  return {
+    id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp,
+    final_telefone: finalTelefone(t.whatsapp), observacoes: t.observacoes ?? null,
+    origem: t.origem, criado_em: t.criado_em, atualizado_em: t.atualizado_em,
+    mesclado_em_id: t.mesclado_em_id ?? null,
+  };
+}
+
+function petCompleto(p) {
+  return {
+    id: p.id, codigo: p.codigo, tutor_id: p.tutor_id, nome: p.nome, especie: p.especie,
+    raca: p.raca ?? null, raca_confirmada: p.raca_confirmada === 1, sexo: p.sexo ?? null,
+    idade_anos: p.idade_anos ?? null, idade_meses: p.idade_meses ?? null,
+    nascimento_aprox: p.nascimento_aprox ?? null, observacoes: p.observacoes ?? null,
+    origem: p.origem, ativo: p.ativo === 1, criado_em: p.criado_em, atualizado_em: p.atualizado_em,
+  };
+}
+
+async function buscarTutor(env, id) {
+  const t = await env.DB.prepare('SELECT * FROM tutores WHERE id = ?').bind(id).first();
+  if (!t) throw new ErroHttp(404, 'Tutor não encontrado.');
+  return t;
+}
+
+async function buscarTutorAtivo(env, id) {
+  const t = await buscarTutor(env, id);
+  if (t.mesclado_em_id) throw new ErroHttp(409, 'Este cadastro foi unido a outro e não pode mais ser usado.');
+  return t;
+}
+
+async function petsDoTutor(env, tutorId, { soAtivos = true } = {}) {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM pets WHERE tutor_id = ? ${soAtivos ? 'AND ativo = 1' : ''} ORDER BY nome_busca, id`
+  ).bind(tutorId).all();
+  return results;
+}
+
+// Outros tutores (não unidos) com o mesmo WhatsApp, já com seus pets.
+async function tutoresComMesmoWhatsapp(env, digitos, ignorarId = 0) {
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM tutores WHERE whatsapp_digitos = ? AND mesclado_em_id IS NULL AND id <> ? ORDER BY id'
+  ).bind(digitos, ignorarId).all();
+  const saida = [];
+  for (const t of results) {
+    const pets = await petsDoTutor(env, t.id);
+    saida.push({
+      id: t.id, codigo: t.codigo, nome: t.nome, final_telefone: finalTelefone(t.whatsapp),
+      pets: pets.map((p) => ({ id: p.id, nome: p.nome, especie: p.especie })),
+    });
+  }
+  return saida;
+}
+
+function respostaDuplicado(erro, tipo, duplicados) {
+  return json({ erro, tipo, duplicados }, 409);
+}
+
+// Pets ativos do mesmo tutor com o mesmo nome.
+async function petsComMesmoNome(env, tutorId, nomeBusca, ignorarId = 0) {
+  const { results } = await env.DB.prepare(
+    'SELECT id, codigo, nome, especie FROM pets WHERE tutor_id = ? AND ativo = 1 AND nome_busca = ? AND id <> ?'
+  ).bind(tutorId, nomeBusca, ignorarId).all();
+  return results;
+}
+
+const MSG_PET_DUPLICADO = 'Este tutor já tem um pet com esse nome.';
+const MSG_WHATS_DUPLICADO = 'Já existe cadastro com este WhatsApp.';
+
+// ---------- busca ----------
+async function buscar(request, env) {
+  await exigirLogin(request, env);
+  const bruto = new URL(request.url).searchParams.get('q') ?? '';
+  const q = normalizarBusca(bruto);
+  if (q.length < 2) throw new ErroHttp(400, 'Digite pelo menos 2 letras para buscar.');
+
+  const padrao = likeSeguro(q);
+  const soTelefone = /^[\d\s()+.-]+$/.test(bruto.trim());
+  const digitos = bruto.replace(/\D/g, '');
+  const usaFone = soTelefone && digitos.length >= 4;
+  const codigo = bruto.trim().toUpperCase();
+
+  // Condições da busca sobre o tutor (alias t).
+  const condTutor = `(t.nome_busca LIKE ? ESCAPE '\\' OR (? = 1 AND t.whatsapp_digitos LIKE ?) OR upper(t.codigo) = ?)`;
+  const argsTutor = [padrao, usaFone ? 1 : 0, '%' + digitos + '%', codigo];
+
+  const { results: comPet } = await env.DB.prepare(
+    `SELECT p.id AS pet_id, p.codigo AS pet_codigo, p.nome AS pet_nome, p.especie,
+            t.id AS tutor_id, t.codigo AS tutor_codigo, t.nome AS tutor_nome, t.whatsapp
+       FROM pets p JOIN tutores t ON t.id = p.tutor_id
+      WHERE p.ativo = 1 AND t.mesclado_em_id IS NULL
+        AND (p.nome_busca LIKE ? ESCAPE '\\' OR upper(p.codigo) = ? OR ${condTutor})
+      ORDER BY p.nome_busca, p.id LIMIT 30`
+  ).bind(padrao, codigo, ...argsTutor).all();
+
+  const itens = comPet.map((r) => ({
+    tipo: 'pet',
+    pet: { id: r.pet_id, codigo: r.pet_codigo, nome: r.pet_nome, especie: r.especie },
+    tutor: { id: r.tutor_id, codigo: r.tutor_codigo, nome: r.tutor_nome, final_telefone: finalTelefone(r.whatsapp) },
+  }));
+
+  if (itens.length < 30) {
+    const { results: semPet } = await env.DB.prepare(
+      `SELECT t.id, t.codigo, t.nome, t.whatsapp FROM tutores t
+        WHERE t.mesclado_em_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM pets p WHERE p.tutor_id = t.id AND p.ativo = 1)
+          AND ${condTutor}
+        ORDER BY t.nome_busca, t.id LIMIT ?`
+    ).bind(...argsTutor, 30 - itens.length).all();
+    for (const t of semPet) {
+      itens.push({ tipo: 'tutor', pet: null, tutor: { id: t.id, codigo: t.codigo, nome: t.nome, final_telefone: finalTelefone(t.whatsapp) } });
+    }
+  }
+  return json({ resultados: itens });
+}
+
+// ---------- tutores ----------
+// Comandos (sem executar) que criam um tutor; o id vem do resultado do batch.
+function comandoInserirTutor(env, { codigo, nome, tel, observacoes, origem, usuarioId, agora }) {
+  return env.DB.prepare(
+    `INSERT INTO tutores (codigo, nome, whatsapp, observacoes, origem, criado_por, criado_em, atualizado_em, nome_busca, whatsapp_digitos)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(codigo, nome, tel.e164, observacoes, origem, usuarioId, agora, agora, normalizarBusca(nome), tel.digitos);
+}
+
+function comandoInserirPet(env, { codigo, tutorId, tutorCodigo, d, origem, usuarioId, agora }) {
+  // Se o tutor acabou de ser criado no mesmo batch, achamos ele pelo código.
+  return env.DB.prepare(
+    `INSERT INTO pets (codigo, tutor_id, nome, especie, raca, raca_confirmada, nascimento_aprox, idade_anos, idade_meses, sexo, observacoes,
+                       origem, criado_por, criado_em, atualizado_em, ativo, nome_busca)
+     VALUES (?, ${tutorId ? '?' : '(SELECT id FROM tutores WHERE codigo = ?)'}, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+  ).bind(codigo, tutorId ?? tutorCodigo, d.nome, d.especie, d.raca, d.nascimento_aprox, d.idade_anos, d.idade_meses, d.sexo, d.observacoes,
+    origem, usuarioId, agora, agora, normalizarBusca(d.nome));
+}
+
+function lerTutor(c) {
+  return {
+    nome: texto(c.nome, 'nome do tutor', { max: 120 }),
+    tel: normalizarWhatsapp(c.whatsapp),
+    observacoes: texto(c.observacoes, 'observações', { obrigatorio: false, max: 1000 }) || null,
+  };
+}
+
+// Lê os dados do pet. "parcial" = só os campos enviados (para edição).
+function lerPet(c, { parcial = false } = {}) {
+  const tem = (k) => !parcial || c[k] !== undefined;
+  const d = {};
+  if (tem('nome')) d.nome = texto(c.nome, 'nome do pet', { max: 80 });
+  if (tem('especie')) d.especie = c.especie === undefined && !parcial ? 'outro' : especieValida(c.especie);
+  if (tem('raca')) d.raca = texto(c.raca, 'raça', { obrigatorio: false, max: 80 }) || null;
+  if (tem('sexo')) d.sexo = sexoValido(c.sexo);
+  if (tem('idade_anos')) d.idade_anos = inteiro(c.idade_anos, 'idade em anos', 0, 40);
+  if (tem('idade_meses')) d.idade_meses = inteiro(c.idade_meses, 'idade em meses', 0, 11);
+  if (tem('nascimento_aprox')) d.nascimento_aprox = nascimentoValido(c.nascimento_aprox);
+  if (tem('observacoes')) d.observacoes = texto(c.observacoes, 'observações', { obrigatorio: false, max: 1000 }) || null;
+  return d;
+}
+
+async function lerPetPorId(env, id) {
+  const p = await env.DB.prepare('SELECT * FROM pets WHERE id = ?').bind(id).first();
+  if (!p) throw new ErroHttp(404, 'Pet não encontrado.');
+  return p;
+}
+
+async function tutoresCriar(request, env) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const t = lerTutor(c);
+  if (c.confirmar_duplicado !== true) {
+    const dup = await tutoresComMesmoWhatsapp(env, t.tel.digitos);
+    if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
+  }
+  const codigo = await proximoCodigo(env, 'tutor');
+  const agora = agoraISO();
+  const r = await comandoInserirTutor(env, { codigo, ...t, origem: origemDe(u), usuarioId: u.id, agora }).run();
+  const id = r.meta.last_row_id;
+  const novo = await buscarTutor(env, id);
+  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_tutor', entidade: 'tutores', entidadeId: id, depois: { codigo, nome: t.nome, whatsapp: t.tel.e164, observacoes: t.observacoes }, ip: ipDe(request) });
+  return json(tutorCompleto(novo), 201);
+}
+
+async function tutoresVer(request, env, id) {
+  await exigirLogin(request, env);
+  const t = await buscarTutor(env, id);
+  const pets = await petsDoTutor(env, id, { soAtivos: false });
+  return json({ tutor: tutorCompleto(t), pets: pets.map(petCompleto) });
+}
+
+async function tutoresAlterar(request, env, id) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const antes = await buscarTutorAtivo(env, id);
+  const novo = { nome: antes.nome, whatsapp: antes.whatsapp, digitos: antes.whatsapp_digitos, observacoes: antes.observacoes };
+  if (c.nome !== undefined) novo.nome = texto(c.nome, 'nome do tutor', { max: 120 });
+  if (c.observacoes !== undefined) novo.observacoes = texto(c.observacoes, 'observações', { obrigatorio: false, max: 1000 }) || null;
+  if (c.whatsapp !== undefined) {
+    const tel = normalizarWhatsapp(c.whatsapp);
+    if (tel.digitos !== antes.whatsapp_digitos && c.confirmar_duplicado !== true) {
+      const dup = await tutoresComMesmoWhatsapp(env, tel.digitos, id);
+      if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
+    }
+    novo.whatsapp = tel.e164;
+    novo.digitos = tel.digitos;
+  }
+  await env.DB.prepare('UPDATE tutores SET nome = ?, nome_busca = ?, whatsapp = ?, whatsapp_digitos = ?, observacoes = ?, atualizado_em = ? WHERE id = ?')
+    .bind(novo.nome, normalizarBusca(novo.nome), novo.whatsapp, novo.digitos, novo.observacoes, agoraISO(), id).run();
+  const resumo = (x) => ({ nome: x.nome, whatsapp: x.whatsapp, observacoes: x.observacoes });
+  await registrarAcao(env, { usuarioId: u.id, acao: 'alterar_tutor', entidade: 'tutores', entidadeId: id, antes: resumo(antes), depois: resumo(novo), ip: ipDe(request) });
+  return json(tutorCompleto(await buscarTutor(env, id)));
+}
+
+// ---------- pets ----------
+async function petsCriar(request, env) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const tutorId = Number(c.tutor_id);
+  if (!Number.isInteger(tutorId)) throw new ErroHttp(400, 'Escolha o tutor do pet.');
+  if (c.especie === undefined || c.especie === '') throw new ErroHttp(400, 'Escolha a espécie: cão, gato ou outro.');
+  const d = lerPet(c);
+  await buscarTutorAtivo(env, tutorId);
+  if (c.confirmar_duplicado !== true) {
+    const dup = await petsComMesmoNome(env, tutorId, normalizarBusca(d.nome));
+    if (dup.length) return respostaDuplicado(MSG_PET_DUPLICADO, 'pet', dup);
+  }
+  const codigo = await proximoCodigo(env, 'pet');
+  const r = await comandoInserirPet(env, { codigo, tutorId, d, origem: origemDe(u), usuarioId: u.id, agora: agoraISO() }).run();
+  const id = r.meta.last_row_id;
+  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: id, depois: { codigo, tutor_id: tutorId, ...d }, ip: ipDe(request) });
+  return json(petCompleto(await lerPetPorId(env, id)), 201);
+}
+
+async function petsVer(request, env, id) {
+  await exigirLogin(request, env);
+  const p = await lerPetPorId(env, id);
+  const t = await buscarTutor(env, p.tutor_id);
+  const { results } = await env.DB.prepare(
+    'SELECT id, chegada_em, status, motivo, urgente FROM atendimentos WHERE pet_id = ? ORDER BY chegada_em DESC, id DESC LIMIT 20'
+  ).bind(id).all();
+  return json({
+    pet: petCompleto(p),
+    tutor: { id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp, final_telefone: finalTelefone(t.whatsapp), mesclado_em_id: t.mesclado_em_id ?? null },
+    atendimentos: results.map((a) => ({ id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1 })),
+  });
+}
+
+async function petsAlterar(request, env, id) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const antes = await lerPetPorId(env, id);
+  const d = lerPet(c, { parcial: true });
+  const novo = { ...petCompleto(antes), ...d };
+  if (c.raca_confirmada !== undefined) novo.raca_confirmada = !!c.raca_confirmada;
+  if (c.ativo !== undefined) novo.ativo = !!c.ativo;
+  if (c.tutor_id !== undefined) {
+    const tid = Number(c.tutor_id);
+    if (!Number.isInteger(tid)) throw new ErroHttp(400, 'Tutor inválido.');
+    if (tid !== antes.tutor_id) await buscarTutorAtivo(env, tid);
+    novo.tutor_id = tid;
+  }
+  // Aviso de nome repetido: se mudou nome, tutor ou voltou a ficar ativo.
+  const mudou = novo.nome !== antes.nome || novo.tutor_id !== antes.tutor_id || (novo.ativo && antes.ativo !== 1);
+  if (novo.ativo && mudou && c.confirmar_duplicado !== true) {
+    const dup = await petsComMesmoNome(env, novo.tutor_id, normalizarBusca(novo.nome), id);
+    if (dup.length) return respostaDuplicado(MSG_PET_DUPLICADO, 'pet', dup);
+  }
+  await env.DB.prepare(
+    `UPDATE pets SET tutor_id = ?, nome = ?, nome_busca = ?, especie = ?, raca = ?, raca_confirmada = ?, nascimento_aprox = ?,
+            idade_anos = ?, idade_meses = ?, sexo = ?, observacoes = ?, ativo = ?, atualizado_em = ? WHERE id = ?`
+  ).bind(novo.tutor_id, novo.nome, normalizarBusca(novo.nome), novo.especie, novo.raca, novo.raca_confirmada ? 1 : 0, novo.nascimento_aprox,
+    novo.idade_anos, novo.idade_meses, novo.sexo, novo.observacoes, novo.ativo ? 1 : 0, agoraISO(), id).run();
+  const campos = ['tutor_id', 'nome', 'especie', 'raca', 'raca_confirmada', 'nascimento_aprox', 'idade_anos', 'idade_meses', 'sexo', 'observacoes', 'ativo'];
+  const resumo = (x) => Object.fromEntries(campos.map((k) => [k, x[k]]));
+  const acao = antes.ativo === 1 && !novo.ativo ? 'arquivar_pet' : 'alterar_pet';
+  await registrarAcao(env, { usuarioId: u.id, acao, entidade: 'pets', entidadeId: id, antes: resumo(petCompleto(antes)), depois: resumo(novo), ip: ipDe(request) });
+  return json(petCompleto(await lerPetPorId(env, id)));
+}
+
+// ---------- cadastro rápido ----------
+async function cadastroRapido(request, env) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const pet = lerPet({ nome: c.pet?.nome, especie: c.pet?.especie }); // especie ausente = 'outro'
+  const origem = origemDe(u);
+  const ip = ipDe(request);
+  const agora = agoraISO();
+
+  // Caso 1: o tutor já existe -> só cria o pet.
+  if (c.tutor_existente_id !== undefined && c.tutor_existente_id !== null) {
+    const tutorId = Number(c.tutor_existente_id);
+    if (!Number.isInteger(tutorId)) throw new ErroHttp(400, 'Tutor inválido.');
+    const tutor = await buscarTutorAtivo(env, tutorId);
+    if (c.confirmar_duplicado !== true) {
+      const dup = await petsComMesmoNome(env, tutorId, normalizarBusca(pet.nome));
+      if (dup.length) return respostaDuplicado(MSG_PET_DUPLICADO, 'pet', dup);
+    }
+    const codigo = await proximoCodigo(env, 'pet');
+    const r = await comandoInserirPet(env, { codigo, tutorId, d: { ...pet, raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null }, origem, usuarioId: u.id, agora }).run();
+    const petId = r.meta.last_row_id;
+    await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
+    return json({ tutor: tutorCompleto(tutor), pet: petCompleto(await lerPetPorId(env, petId)) }, 201);
+  }
+
+  // Caso 2: tutor novo.
+  const t = lerTutor({ nome: c.tutor?.nome, whatsapp: c.tutor?.whatsapp });
+  if (c.confirmar_duplicado !== true) {
+    const dup = await tutoresComMesmoWhatsapp(env, t.tel.digitos);
+    if (dup.length) return respostaDuplicado(MSG_WHATS_DUPLICADO, 'tutor', dup);
+  }
+  const codTutor = await proximoCodigo(env, 'tutor');
+  const codPet = await proximoCodigo(env, 'pet');
+  const vazio = { raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null };
+  // Tutor e pet são gravados juntos: ou entram os dois, ou nenhum.
+  const [rt, rp] = await env.DB.batch([
+    comandoInserirTutor(env, { codigo: codTutor, ...t, observacoes: null, origem, usuarioId: u.id, agora }),
+    comandoInserirPet(env, { codigo: codPet, tutorCodigo: codTutor, d: { ...pet, ...vazio }, origem, usuarioId: u.id, agora }),
+  ]);
+  const tutorId = rt.meta.last_row_id;
+  const petId = rp.meta.last_row_id;
+  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_tutor', entidade: 'tutores', entidadeId: tutorId, depois: { codigo: codTutor, nome: t.nome, whatsapp: t.tel.e164, via: 'cadastro_rapido' }, ip });
+  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo: codPet, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
+  return json({ tutor: tutorCompleto(await buscarTutor(env, tutorId)), pet: petCompleto(await lerPetPorId(env, petId)) }, 201);
+}
+
+// ---------- juntar cadastros duplicados ----------
+async function tutoresMesclar(request, env, id) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const duplicadoId = Number(c.duplicado_id);
+  if (!Number.isInteger(duplicadoId)) throw new ErroHttp(400, 'Escolha o cadastro a ser unido.');
+  if (duplicadoId === id) throw new ErroHttp(400, 'Não é possível juntar um cadastro com ele mesmo.');
+  const principal = await buscarTutor(env, id);
+  const duplicado = await buscarTutor(env, duplicadoId);
+  if (principal.mesclado_em_id || duplicado.mesclado_em_id) throw new ErroHttp(409, 'Um dos cadastros já foi unido a outro.');
+  const pets = await petsDoTutor(env, duplicadoId, { soAtivos: false });
+  const agora = agoraISO();
+  await env.DB.batch([
+    env.DB.prepare('UPDATE pets SET tutor_id = ?, atualizado_em = ? WHERE tutor_id = ?').bind(id, agora, duplicadoId),
+    env.DB.prepare('UPDATE tutores SET mesclado_em_id = ?, atualizado_em = ? WHERE id = ? AND mesclado_em_id IS NULL').bind(id, agora, duplicadoId),
+    prepararAcao(env, {
+      usuarioId: u.id, acao: 'mesclar_tutores', entidade: 'tutores', entidadeId: id,
+      antes: { duplicado_id: duplicadoId, duplicado_codigo: duplicado.codigo },
+      depois: { principal_id: id, duplicado_id: duplicadoId, pets_movidos: pets.map((p) => p.id) },
+      ip: ipDe(request),
+    }),
+  ]);
+  const todos = await petsDoTutor(env, id, { soAtivos: false });
+  return json({ tutor: tutorCompleto(await buscarTutor(env, id)), pets: todos.map(petCompleto), pets_movidos: pets.map((p) => p.id) });
+}
+
+// ---------- dados de teste (só administrador) ----------
+// "TESTE" só vale como palavra inteira no começo do nome: "TESTE Maria" sim, "Testolin" não.
+const ONDE_TUTOR_TESTE = `(nome_busca = 'teste' OR nome_busca LIKE 'teste %')`;
+const PETS_TESTE = `SELECT id FROM pets WHERE ${ONDE_TUTOR_TESTE} OR tutor_id IN (SELECT id FROM tutores WHERE ${ONDE_TUTOR_TESTE})`;
+const ATEND_TESTE = `SELECT id FROM atendimentos WHERE pet_id IN (${PETS_TESTE})`;
+const PEDIDOS_TESTE = `SELECT id FROM pedidos WHERE atendimento_id IN (${ATEND_TESTE})`;
+
+async function contarDadosTeste(env) {
+  const n = async (sql) => (await env.DB.prepare(sql).first()).n;
+  return {
+    tutores: await n(`SELECT COUNT(*) AS n FROM tutores WHERE ${ONDE_TUTOR_TESTE}`),
+    pets: await n(`SELECT COUNT(*) AS n FROM (${PETS_TESTE})`),
+    atendimentos: await n(`SELECT COUNT(*) AS n FROM (${ATEND_TESTE})`),
+    pedidos: await n(`SELECT COUNT(*) AS n FROM (${PEDIDOS_TESTE})`),
+  };
+}
+
+async function dadosTesteVer(request, env) {
+  await exigirAdmin(request, env);
+  return json(await contarDadosTeste(env));
+}
+
+async function dadosTesteApagar(request, env) {
+  const adm = await exigirAdmin(request, env);
+  const c = await lerJson(request);
+  if (c.confirmacao !== 'APAGAR') throw new ErroHttp(400, 'Para apagar, digite APAGAR na confirmação.');
+  // Se algum cadastro de verdade foi unido a um de teste, não dá para apagar sem perder dados reais.
+  const preso = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM tutores WHERE mesclado_em_id IN (SELECT id FROM tutores WHERE ${ONDE_TUTOR_TESTE})
+        AND NOT ${ONDE_TUTOR_TESTE}`
+  ).first();
+  if (preso.n > 0) throw new ErroHttp(409, 'Há cadastros reais unidos a um cadastro de teste. Desfaça isso antes de apagar.');
+
+  const contagem = await contarDadosTeste(env);
+  // Ordem segura (de quem depende para quem é dependido), tudo de uma vez.
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM pagamentos WHERE pedido_id IN (${PEDIDOS_TESTE})`),
+    env.DB.prepare(`DELETE FROM itens_pedido WHERE pedido_id IN (${PEDIDOS_TESTE})`),
+    env.DB.prepare(`DELETE FROM pedidos WHERE id IN (${PEDIDOS_TESTE})`),
+    env.DB.prepare(`DELETE FROM atendimentos WHERE id IN (${ATEND_TESTE})`),
+    env.DB.prepare(`DELETE FROM pets WHERE id IN (${PETS_TESTE})`),
+    env.DB.prepare(`DELETE FROM tutores WHERE ${ONDE_TUTOR_TESTE}`),
+    prepararAcao(env, { usuarioId: adm.id, acao: 'apagar_dados_teste', entidade: 'tutores', depois: contagem, ip: ipDe(request) }),
+  ]);
+  return json({ apagados: contagem });
+}
+
+// Rotas deste arquivo (juntadas à tabela de rotas em index.js).
+export const ROTAS_CADASTRO = [
+  ['GET', '/api/busca', buscar],
+  ['POST', '/api/tutores', tutoresCriar],
+  ['GET', '/api/tutores/:id', tutoresVer],
+  ['PATCH', '/api/tutores/:id', tutoresAlterar],
+  ['POST', '/api/tutores/:id/mesclar', tutoresMesclar],
+  ['POST', '/api/pets', petsCriar],
+  ['GET', '/api/pets/:id', petsVer],
+  ['PATCH', '/api/pets/:id', petsAlterar],
+  ['POST', '/api/cadastro-rapido', cadastroRapido],
+  ['GET', '/api/admin/dados-teste', dadosTesteVer],
+  ['POST', '/api/admin/apagar-dados-teste', dadosTesteApagar],
+];
