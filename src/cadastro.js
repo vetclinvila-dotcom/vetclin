@@ -197,6 +197,66 @@ async function buscar(request, env) {
   return json({ resultados: itens });
 }
 
+// ---------- sugestões na chegada ----------
+// Enquanto a recepção digita nome do pet / tutor / WhatsApp, o painel procura pets já cadastrados.
+// Ordem: (1) nome do pet E do tutor combinam; (2) WhatsApp combina (8+ números), qualquer pet do tutor;
+// (3) só o nome do pet combina (somente quando o campo do tutor está vazio ou curto).
+// Nunca devolve o telefone inteiro, só o final.
+const MAX_SUGESTOES_CHEGADA = 5;
+
+function textoIdade(anos, meses) {
+  const partes = [];
+  if (anos) partes.push(anos === 1 ? '1 ano' : `${anos} anos`);
+  if (meses) partes.push(meses === 1 ? '1 mês' : `${meses} meses`);
+  return partes.join(' e ') || null;
+}
+
+async function chegadaSugestoes(request, env) {
+  await exigirLogin(request, env);
+  const qs = new URL(request.url).searchParams;
+  const pet = normalizarBusca(qs.get('pet'));
+  const tutor = normalizarBusca(qs.get('tutor'));
+  const digitos = String(qs.get('whatsapp') ?? '').replace(/\D/g, '');
+  if (pet.length < 2) return json({ sugestoes: [] });
+  const usaFone = digitos.length >= 8;
+  const tutorValido = tutor.length >= 2;
+
+  const { results } = await env.DB.prepare(
+    `SELECT p.id, p.codigo, p.nome, p.nome_busca, p.especie, p.idade_anos, p.idade_meses, p.foto_id,
+            t.id AS tutor_id, t.nome AS tutor_nome, t.nome_busca AS tutor_busca, t.whatsapp, t.whatsapp_digitos,
+            (SELECT peso_kg FROM atendimentos a WHERE a.pet_id = p.id AND a.peso_kg IS NOT NULL ORDER BY a.chegada_em DESC, a.id DESC LIMIT 1) AS ultimo_peso_kg,
+            (SELECT MAX(chegada_em) FROM atendimentos a WHERE a.pet_id = p.id AND a.status <> 'cancelado') AS ultima_visita_em,
+            EXISTS (SELECT 1 FROM atendimentos a WHERE a.pet_id = p.id AND a.status IN ('chegou','em_atendimento')) AS aberto
+       FROM pets p JOIN tutores t ON t.id = p.tutor_id
+      WHERE p.ativo = 1 AND t.mesclado_em_id IS NULL
+        AND (p.nome_busca LIKE ? ESCAPE '\\' OR (? = 1 AND t.whatsapp_digitos LIKE ?))
+      ORDER BY p.nome_busca, p.id LIMIT 200`
+  ).bind(likeSeguro(pet), usaFone ? 1 : 0, '%' + digitos + '%').all();
+
+  const candidatos = [];
+  for (const r of results) {
+    const petCombina = r.nome_busca.includes(pet);
+    let nivel = 0;
+    if (petCombina && tutorValido && r.tutor_busca.includes(tutor)) nivel = 1;
+    else if (usaFone && r.whatsapp_digitos.includes(digitos)) nivel = 2;
+    else if (petCombina && tutor.length < 3) nivel = 3;
+    if (!nivel) continue;
+    candidatos.push({ r, nivel, comeca: r.nome_busca.startsWith(pet) ? 0 : 1 });
+  }
+  // Mesmo nível: quem começa com o texto digitado vem antes; depois os mais recentes.
+  candidatos.sort((a, b) => a.nivel - b.nivel || a.comeca - b.comeca || String(b.r.ultima_visita_em ?? '').localeCompare(String(a.r.ultima_visita_em ?? '')) || a.r.id - b.r.id);
+
+  return json({
+    sugestoes: candidatos.slice(0, MAX_SUGESTOES_CHEGADA).map(({ r }) => ({
+      pet: { id: r.id, codigo: r.codigo, nome: r.nome, especie: r.especie, idade: textoIdade(r.idade_anos, r.idade_meses), foto_id: r.foto_id ?? null },
+      tutor: { id: r.tutor_id, nome: r.tutor_nome, final_telefone: finalTelefone(r.whatsapp) },
+      ultimo_peso_kg: r.ultimo_peso_kg ?? null,
+      ultima_visita_em: r.ultima_visita_em ?? null,
+      em_atendimento: r.aberto === 1,
+    })),
+  });
+}
+
 // ---------- tutores ----------
 // Comandos (sem executar) que criam um tutor; o id vem do resultado do batch.
 function comandoInserirTutor(env, { codigo, nome, tel, observacoes, origem, usuarioId, agora }) {
@@ -552,6 +612,7 @@ async function dadosTesteApagar(request, env) {
 // Rotas deste arquivo (juntadas à tabela de rotas em index.js).
 export const ROTAS_CADASTRO = [
   ['GET', '/api/busca', buscar],
+  ['GET', '/api/chegada/sugestoes', chegadaSugestoes],
   ['POST', '/api/tutores', tutoresCriar],
   ['GET', '/api/tutores/:id', tutoresVer],
   ['PATCH', '/api/tutores/:id', tutoresAlterar],

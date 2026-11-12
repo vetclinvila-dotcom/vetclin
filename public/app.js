@@ -4,6 +4,7 @@
 
 import { cartaoNotificacoes } from './notificacoes-app.js';
 import { itensDoTexto } from './produtos-receita.js';
+import { CAMPOS, linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from './receita-linhas.js';
 import { MAX_VALOR_CENTAVOS, formatarReais, lerReais, reaisParaCampo } from './dinheiro.js';
 
 const raiz = document.getElementById('app');
@@ -30,7 +31,7 @@ function el(tag, atributos = {}, ...filhos) {
 }
 
 function mostrar(...elementos) {
-  raiz.classList.remove('larga', 'impressao'); // só a tela Hoje usa a largura grande; 'impressao' é a folha da receita
+  raiz.classList.remove('larga', 'impressao', 'colunas'); // só a tela Hoje usa a largura grande; 'impressao' é a folha da receita
   raiz.replaceChildren(...elementos.filter((x) => x != null && x !== false)); // ignora vazios (senão apareceria o texto "null")
 }
 
@@ -285,14 +286,14 @@ function selectSexo(atual) {
 }
 
 // Janela de confirmação. Devolve true se a pessoa confirmou.
-function confirmar(titulo, texto, rotuloOk) {
+function confirmar(titulo, texto, rotuloOk, rotuloNao = 'Cancelar') {
   return new Promise((resolve) => {
     const d = el('dialog', { class: 'confirmacao' },
       el('h2', {}, titulo),
       ...[].concat(texto).map((t) => (t instanceof Node ? t : el('p', {}, t))),
       el('div', { class: 'acoes' },
         el('button', { type: 'button', id: 'confirmar-sim' }, rotuloOk),
-        el('button', { type: 'button', class: 'secundario', id: 'confirmar-nao' }, 'Cancelar')));
+        el('button', { type: 'button', class: 'secundario', id: 'confirmar-nao' }, rotuloNao)));
     const fechar = (v) => { d.close(); d.remove(); resolve(v); };
     d.querySelector('#confirmar-sim').addEventListener('click', () => fechar(true));
     d.querySelector('#confirmar-nao').addEventListener('click', () => fechar(false));
@@ -586,8 +587,8 @@ function telaHoje() {
     cartaoAviso,
     topoReceitas,
     el('div', { class: 'acoes-grandes' },
-      el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/busca?modo=chegada') }, 'Registrar chegada'),
-      el('button', { type: 'button', class: 'grande secundario', id: 'cadastro-rapido', onclick: () => irPara('#/cadastro') }, 'Cadastro rápido'),
+      el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/chegada/nova') }, 'Registrar chegada'),
+      el('button', { type: 'button', class: 'secundario', id: 'buscar-paciente', onclick: () => irPara('#/busca') }, 'Buscar paciente'),
     ),
     avisos, listas,
     el('p', { class: 'suave' }, el('span', { class: 'etiqueta' }, NOME_PAPEL[usuario.papel] || usuario.papel), usuario.admin ? el('span', { class: 'etiqueta' }, 'Administrador') : null, usuario.nome),
@@ -673,20 +674,17 @@ function telaHoje() {
 }
 
 // ---------- Busca ----------
-function telaBusca(qInicial = '', modo = '') {
-  const chegada = modo === 'chegada'; // toque no resultado abre o formulário de chegada
+function telaBusca(qInicial = '') {
   const campoBusca = el('input', { id: 'q', type: 'search', class: 'busca-grande', placeholder: 'Nome do pet, do tutor ou telefone', autocomplete: 'off', value: qInicial, 'aria-label': 'Nome do pet, do tutor ou telefone' });
   const area = el('div', { id: 'resultados' });
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, chegada ? 'Registrar chegada' : 'Buscar paciente'),
-    chegada ? el('p', { class: 'suave' }, 'Busque o paciente que chegou e toque nele.') : null, campoBusca, area);
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Buscar paciente'), campoBusca, area);
 
   let tempo = null;
   let numero = 0; // ignora respostas antigas
   async function buscarAgora() {
     const q = campoBusca.value.trim();
     // Guarda o texto no endereço (sem criar passo novo no "voltar").
-    const sufixo = chegada ? '&modo=chegada' : '';
-    history.replaceState(null, '', q ? `#/busca?q=${encodeURIComponent(q)}${sufixo}` : (chegada ? '#/busca?modo=chegada' : '#/busca'));
+    history.replaceState(null, '', q ? `#/busca?q=${encodeURIComponent(q)}` : '#/busca');
     const meu = ++numero;
     if (q.length < 2) {
       area.replaceChildren(el('p', { class: 'suave' }, 'Digite pelo menos 2 letras ou 4 números do telefone.'));
@@ -700,10 +698,10 @@ function telaBusca(qInicial = '', modo = '') {
         area.replaceChildren(
           el('div', { class: 'cartao vazio' },
             el('p', {}, 'Nenhum paciente encontrado.'),
-            el('button', { type: 'button', onclick: () => irPara('#/cadastro') }, 'Cadastrar novo (cadastro rápido)')));
+            el('button', { type: 'button', onclick: () => irPara('#/chegada/nova') }, 'Registrar chegada de um pet novo')));
         return;
       }
-      area.replaceChildren(...resultados.map((r) => cartaoResultado(r, chegada)));
+      area.replaceChildren(...resultados.map((r) => cartaoResultado(r)));
     } catch (e) {
       if (meu === numero) area.replaceChildren(caixaMensagem('erro', e.message));
     }
@@ -713,10 +711,10 @@ function telaBusca(qInicial = '', modo = '') {
   campoBusca.focus();
 }
 
-function cartaoResultado(r, chegada = false) {
+function cartaoResultado(r) {
   const tutor = `Tutor: ${r.tutor.nome}${r.tutor.final_telefone ? ' · final ' + r.tutor.final_telefone : ''}`;
   if (r.tipo === 'pet') {
-    return el('button', { type: 'button', class: 'resultado', onclick: () => irPara(chegada ? `#/chegada/${r.pet.id}` : `#/pet/${r.pet.id}`) },
+    return el('button', { type: 'button', class: 'resultado', onclick: () => irPara(`#/pet/${r.pet.id}`) },
       el('strong', { class: 'resultado-nome' }, r.pet.nome),
       el('span', {}, ROTULO_ESPECIE[r.pet.especie] || r.pet.especie),
       el('span', { class: 'suave' }, tutor),
@@ -729,121 +727,183 @@ function cartaoResultado(r, chegada = false) {
     el('small', { class: 'suave' }, r.tutor.codigo));
 }
 
-// ---------- Cadastro rápido ----------
-function telaCadastro() {
+// ---------- Registrar chegada (um só formulário) ----------
+// A recepção não sabe se o pet já tem cadastro. O formulário sempre parece "pet novo"; enquanto
+// a pessoa digita, o painel procura no cadastro e oferece "É este". Se ela ignorar, cadastra como novo
+// (com os avisos de repetido de sempre).
+const FORMATO_DIA_CURTO = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Bahia', day: '2-digit', month: '2-digit' });
+function formatarDiaCurto(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : FORMATO_DIA_CURTO.format(d);
+}
+
+// Monta um "candidato" (mesmo formato de /api/chegada/sugestoes) a partir da ficha do pet.
+async function candidatoDoPet(petId) {
+  const d = await api('GET', `/api/pets/${petId}`);
+  const comPeso = d.atendimentos.find((a) => a.peso_kg != null);
+  const ultima = d.atendimentos.find((a) => a.status !== 'cancelado');
+  return {
+    pet: { id: d.pet.id, codigo: d.pet.codigo, nome: d.pet.nome, especie: d.pet.especie, idade: idadeCurta(d.pet) || null, foto_id: d.pet.foto_id },
+    tutor: { id: d.tutor.id, nome: d.tutor.nome, final_telefone: d.tutor.final_telefone },
+    ultimo_peso_kg: comPeso ? comPeso.peso_kg : null,
+    ultima_visita_em: ultima ? ultima.chegada_em : null,
+    em_atendimento: !!d.atendimento_aberto,
+  };
+}
+
+function cartaoCandidato(c, aoEscolher) {
+  const detalhes = [ROTULO_ESPECIE[c.pet.especie] || c.pet.especie, c.pet.idade].filter(Boolean).join(' · ');
+  const tutor = `Tutor: ${c.tutor.nome}${c.tutor.final_telefone ? ' · final ' + c.tutor.final_telefone : ''}`;
+  const peso = c.ultimo_peso_kg != null
+    ? `último peso ${formatarPeso(c.ultimo_peso_kg)}${c.ultima_visita_em ? ' em ' + formatarDiaCurto(c.ultima_visita_em) : ''}`
+    : (c.ultima_visita_em ? `última visita em ${formatarDiaCurto(c.ultima_visita_em)}` : 'sem visitas anteriores');
+  return el('div', { class: 'candidato', 'data-pet-id': String(c.pet.id) },
+    miniatura(c.pet.foto_id, c.pet.nome),
+    el('div', { class: 'candidato-info' },
+      el('div', {}, el('strong', { class: 'resultado-nome' }, c.pet.nome), detalhes ? ` · ${detalhes}` : ''),
+      el('div', { class: 'suave' }, tutor),
+      el('div', { class: 'suave' }, peso)),
+    c.em_atendimento
+      ? el('div', { class: 'candidato-acao' }, el('strong', { class: 'ja-na-clinica' }, 'Já está na clínica'), el('a', { href: '#/hoje', class: 'ver-hoje' }, 'Ver em Hoje'))
+      : el('button', { type: 'button', class: 'grande este', onclick: () => aoEscolher(c) }, 'É este'));
+}
+
+// "petPre" = id de um pet já escolhido (vem da ficha do pet: #/chegada/123).
+async function telaChegadaNova(petPre = null) {
+  const minha = versaoTela;
+  let escolhido = null; // candidato escolhido ("É este"); null = cadastro novo
+  if (petPre) {
+    carregando();
+    try { escolhido = await candidatoDoPet(petPre); } catch (e) { if (minha === versaoTela) telaErro(e, '#/hoje'); return; }
+    if (minha !== versaoTela) return;
+  }
+
   const especie = escolhaEspecie('');
+  const campos = camposChegada({ nomePet: 'pet' });
   const area = el('div');
-  const botao = el('button', { type: 'submit' }, 'Cadastrar');
-  const chegadaCampos = camposChegada({ nomePet: 'pet' });
-  // Chave "Chegada agora": ligada = registra também o atendimento (peso, motivo, urgência, foto).
-  const chave = el('input', { type: 'checkbox', id: 'chegada_agora', name: 'chegada_agora', checked: true });
-  const blocoPeso = el('div', { class: 'bloco-chegada' }, ...chegadaCampos.peso);
-  const blocoResto = el('div', { class: 'bloco-chegada' }, ...chegadaCampos.resto);
-  chave.addEventListener('change', () => { blocoPeso.hidden = blocoResto.hidden = !chave.checked; });
-  const f = el('form', { novalidate: true },
-    ...campo('Nome do pet', 'pet_nome', { required: true, autocomplete: 'off' }),
-    el('label', {}, 'Espécie'), especie.caixa,
-    el('label', { class: 'linha chave-chegada' }, chave, 'Chegada agora (registrar peso e motivo)'),
-    blocoPeso,
-    ...campo('Nome do tutor', 'tutor_nome', { required: true, autocomplete: 'off' }),
-    ...campo('WhatsApp do tutor', 'whatsapp', { type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off', required: true }),
-    blocoResto,
-    area, botao);
+  const sugestoes = el('div', { id: 'sugestoes' });
+  const botao = el('button', { type: 'submit', id: 'enviar-chegada' }, 'Registrar chegada');
+  const entradaPet = el('input', { id: 'pet_nome', name: 'pet_nome', autocomplete: 'off', required: true });
+  const entradaTutor = el('input', { id: 'tutor_nome', name: 'tutor_nome', autocomplete: 'off', required: true });
+  const entradaFone = el('input', { id: 'whatsapp', name: 'whatsapp', type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off', required: true });
+  const blocoNomes = el('div', {}, el('label', { for: 'pet_nome' }, 'Nome do pet'), entradaPet, el('label', { for: 'tutor_nome' }, 'Nome do tutor'), entradaTutor, sugestoes);
+  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor'), entradaFone);
+  const cabecaEscolhido = el('div', { class: 'cartao cabeca-chegada', id: 'pet-escolhido' });
+  const blocoPeso = el('div', { class: 'bloco-chegada' }, ...campos.peso);
+
+  function desenharEscolhido() {
+    const c = escolhido;
+    blocoNomes.hidden = blocoNovo.hidden = !!c;
+    cabecaEscolhido.hidden = !c;
+    if (c) {
+      cabecaEscolhido.replaceChildren(
+        miniatura(c.pet.foto_id, c.pet.nome),
+        el('div', { class: 'candidato-info' },
+          el('div', {}, 'Pet: ', el('strong', {}, c.pet.nome), ` (${(ROTULO_ESPECIE[c.pet.especie] || c.pet.especie).toLowerCase()}) — tutor ${c.tutor.nome}`),
+          c.ultimo_peso_kg != null ? el('div', { class: 'suave' }, `último peso ${formatarPeso(c.ultimo_peso_kg)}`) : null,
+          c.em_atendimento ? el('div', { class: 'ja-na-clinica' }, 'Já está na clínica. ', el('a', { href: '#/hoje' }, 'Ver em Hoje')) : null),
+        el('button', { type: 'button', class: 'secundario', id: 'trocar-pet', onclick: () => { escolhido = null; desenharEscolhido(); procurar(); } }, 'trocar'));
+      sugestoes.replaceChildren();
+    }
+    botao.hidden = !!(c && c.em_atendimento);
+  }
+
+  function escolher(c) {
+    escolhido = c;
+    area.replaceChildren();
+    desenharEscolhido();
+    campos.pesoCampo.focus();
+  }
+
+  // Procura no cadastro enquanto digita (espera 300 ms depois da última tecla).
+  let tempo = null;
+  let numero = 0; // ignora respostas antigas
+  async function procurar() {
+    if (escolhido) return;
+    const meu = ++numero;
+    const pet = entradaPet.value.trim();
+    if (pet.length < 2) { sugestoes.replaceChildren(); return; }
+    const qs = new URLSearchParams({ pet, tutor: entradaTutor.value.trim(), whatsapp: entradaFone.value.trim() });
+    try {
+      const { sugestoes: lista } = await api('GET', '/api/chegada/sugestoes?' + qs);
+      if (meu !== numero || escolhido || minha !== versaoTela) return;
+      sugestoes.replaceChildren(...(lista.length
+        ? [el('div', { class: 'cartao sugestoes' }, el('h2', {}, 'Encontramos no cadastro:'), ...lista.map((c) => cartaoCandidato(c, escolher)))]
+        : []));
+    } catch (e) {
+      if (meu === numero) sugestoes.replaceChildren(); // sugestão é só um auxílio: se falhar, segue como cadastro novo
+    }
+  }
+  for (const x of [entradaPet, entradaTutor, entradaFone]) x.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(procurar, 300); });
+
+  const f = el('form', { novalidate: true }, cabecaEscolhido, blocoNomes, blocoNovo, blocoPeso, el('div', { class: 'bloco-chegada' }, ...campos.resto), area, botao);
+  desenharEscolhido();
 
   async function enviar(extra = {}) {
     area.replaceChildren();
     botao.disabled = true;
     try {
-      const v = (id) => f.querySelector('#' + id).value;
-      const corpo = {
-        tutor: { nome: v('tutor_nome'), whatsapp: v('whatsapp') },
-        pet: { nome: v('pet_nome'), especie: especie.valor() || undefined },
-        ...extra,
-      };
-      if (chave.checked) corpo.chegada = await chegadaCampos.coletar(); // confere peso/motivo e envia a foto
-      const r = await api('POST', '/api/cadastro-rapido', corpo);
-      irPara(chave.checked ? '#/hoje' : `#/pet/${r.pet.id}`);
+      const chegada = await campos.coletar(); // confere peso/motivo e envia a foto
+      if (escolhido) {
+        await api('POST', '/api/atendimentos', { pet_id: escolhido.pet.id, ...chegada });
+      } else {
+        await api('POST', '/api/cadastro-rapido', {
+          tutor: { nome: entradaTutor.value, whatsapp: entradaFone.value },
+          pet: { nome: entradaPet.value, especie: especie.valor() || undefined },
+          chegada, ...extra,
+        });
+      }
+      irPara('#/hoje');
     } catch (e) {
       botao.disabled = false;
       botao.hidden = false;
-      if (e.status === 409 && e.dados && e.dados.duplicados) {
+      if (e.status === 409 && e.dados && e.dados.atendimento_id) {
+        botao.hidden = true;
+        area.replaceChildren(el('div', { class: 'cartao aviso' }, el('h2', {}, 'Este pet já está na clínica.'),
+          el('p', {}, 'Já existe um atendimento aberto para ele. Veja na tela Hoje.'),
+          el('button', { type: 'button', id: 'ir-hoje', onclick: () => irPara('#/hoje') }, 'Ir para Hoje')));
+      } else if (e.status === 409 && e.dados && e.dados.duplicados) {
         // Enquanto o aviso de repetido está na tela, só as opções do aviso valem.
         botao.hidden = true;
-        area.replaceChildren(cartaoDuplicado(e.dados, extra, enviar, () => { area.replaceChildren(); botao.hidden = false; }));
+        const usar = async (id) => { try { escolher(await candidatoDoPet(id)); botao.hidden = !!escolhido.em_atendimento; } catch (er) { area.replaceChildren(caixaMensagem('erro', er.message)); } };
+        area.replaceChildren(cartaoDuplicado(e.dados, extra, enviar, () => { area.replaceChildren(); botao.hidden = false; }, usar));
       } else area.replaceChildren(caixaMensagem('erro', e.message));
     }
   }
   f.addEventListener('submit', (ev) => {
     ev.preventDefault();
-    if (!especie.valor()) { area.replaceChildren(caixaMensagem('erro', 'Escolha a espécie: Cão, Gato ou Outro.')); return; }
+    if (!escolhido && !especie.valor()) { area.replaceChildren(caixaMensagem('erro', 'Escolha a espécie: Cão, Gato ou Outro.')); return; }
     enviar();
   });
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Cadastro rápido'), el('div', { class: 'cartao' }, f));
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Registrar chegada'), el('div', { class: 'cartao' }, f));
+  if (escolhido) campos.pesoCampo.focus(); else entradaPet.focus();
 }
 
 // Cartão mostrado quando a API avisa de cadastro repetido (WhatsApp ou pet).
 // "aoVoltar" (opcional) desfaz o aviso para a pessoa corrigir os dados.
-function cartaoDuplicado(dados, extra, reenviar, aoVoltar = null) {
+// "usarPet(id)" (opcional) deixa escolher o pet que já existe; sem ele, abre a ficha.
+function cartaoDuplicado(dados, extra, reenviar, aoVoltar = null, usarPet = null) {
   const voltar = aoVoltar ? el('button', { type: 'button', class: 'secundario', onclick: aoVoltar }, 'Voltar e corrigir os dados') : null;
   if (dados.tipo === 'pet') {
     const d = dados.duplicados[0];
     return el('div', { class: 'cartao aviso' },
       el('h2', {}, `Este tutor já tem um pet chamado ${d.nome}`),
       el('div', { class: 'acoes' },
-        el('button', { type: 'button', onclick: () => irPara(`#/pet/${d.id}`) }, 'Abrir a ficha existente'),
+        usarPet
+          ? el('button', { type: 'button', id: 'usar-este', onclick: () => usarPet(d.id) }, 'Usar este')
+          : el('button', { type: 'button', onclick: () => irPara(`#/pet/${d.id}`) }, 'Abrir a ficha existente'),
         el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ ...extra, confirmar_duplicado: true }) }, 'Cadastrar mesmo assim'),
         voltar));
   }
   return el('div', { class: 'cartao aviso' },
-    el('h2', {}, 'Já existe cadastro com este WhatsApp'),
+    el('h2', {}, 'É a mesma pessoa?'),
+    el('p', {}, 'Já existe cadastro com este WhatsApp.'),
     ...dados.duplicados.map((t) => el('div', { class: 'cartao' },
       el('strong', {}, t.nome), el('span', { class: 'suave' }, ` · final ${t.final_telefone} · ${t.codigo}`),
       el('p', { class: 'suave' }, t.pets.length ? 'Pets: ' + t.pets.map((p) => `${p.nome} (${ROTULO_ESPECIE[p.especie] || p.especie})`).join(', ') : 'Nenhum pet cadastrado.'),
       el('button', { type: 'button', onclick: () => reenviar({ tutor_existente_id: t.id }) }, 'Sim, é esta pessoa — adicionar o pet aqui'))),
     el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ confirmar_duplicado: true }) }, 'Não, é outra pessoa da família — criar novo cadastro'),
     voltar);
-}
-
-// ---------- Registrar chegada (pet que já tem cadastro) ----------
-async function telaChegada(petId) {
-  const minha = versaoTela;
-  carregando();
-  let d;
-  try { d = await api('GET', `/api/pets/${petId}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/busca?modo=chegada'); return; }
-  if (minha !== versaoTela) return;
-  const { pet, tutor, atendimento_aberto: aberto } = d;
-  const cabecaPet = el('div', { class: 'cartao cabeca-chegada' },
-    miniatura(pet.foto_id, pet.nome),
-    el('div', {}, el('div', { class: 'atend-nome' }, pet.nome),
-      el('div', { class: 'suave' }, [ROTULO_ESPECIE[pet.especie] || pet.especie, idadeCurta(pet)].filter(Boolean).join(' · ')),
-      el('div', { class: 'suave' }, `Tutor: ${tutor.nome}${tutor.final_telefone ? ' · final ' + tutor.final_telefone : ''}`)));
-  const jaNaClinica = () => el('div', { class: 'cartao aviso' },
-    el('h2', {}, 'Este pet já está na clínica.'),
-    el('p', {}, 'Já existe um atendimento aberto para ele. Veja na tela Hoje.'),
-    el('button', { type: 'button', id: 'ir-hoje', onclick: () => irPara('#/hoje') }, 'Ir para Hoje'));
-  if (aberto) {
-    mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Registrar chegada'), cabecaPet, jaNaClinica());
-    return;
-  }
-  const campos = camposChegada({ nomePet: pet.nome });
-  const area = el('div');
-  const botao = el('button', { type: 'submit' }, 'Registrar chegada');
-  const f = el('form', { novalidate: true }, ...campos.peso, ...campos.resto, area, botao);
-  f.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    area.replaceChildren();
-    botao.disabled = true;
-    try {
-      await api('POST', '/api/atendimentos', { pet_id: pet.id, ...(await campos.coletar()) });
-      irPara('#/hoje');
-    } catch (e) {
-      botao.disabled = false;
-      if (e.status === 409 && e.dados && e.dados.atendimento_id) { botao.hidden = true; area.replaceChildren(jaNaClinica()); }
-      else area.replaceChildren(caixaMensagem('erro', e.message));
-    }
-  });
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Registrar chegada'), cabecaPet, el('div', { class: 'cartao' }, f));
-  campos.pesoCampo.focus();
 }
 
 // ---------- Editar atendimento em aberto (peso, motivo, urgência, foto) ----------
@@ -1613,6 +1673,207 @@ function secaoProdutos(d, pegarTexto, minha) {
   };
 }
 
+// ---------- Receita em colunas (editor padrão) ----------
+// Cada remédio é uma linha com campos separados (remédio, dose, como dar, a cada, por quanto tempo),
+// e na mesma linha a equipe marca "Temos?", quantidade e valor (só para a equipe, nunca no papel).
+// O texto da receita é gerado a partir das linhas (receita-linhas.js); os produtos são as próprias linhas.
+const ROTULOS_COLUNAS = { remedio: 'Remédio', dose: 'Dose', como: 'Como dar', intervalo: 'A cada', duracao: 'Duração' };
+const EXEMPLOS_COLUNAS = { remedio: 'ex.: Amoxicilina', dose: '250 mg', como: '1 comprimido', intervalo: '12 h', duracao: '7 dias' };
+
+// "d" é a resposta de GET /api/receitas/:id. "aoMudar()" avisa a tela para gravar o texto/linhas.
+// Devolve { caixa, linhas(), texto(), salvarAgora(), semValor(), focarPrimeiroSemValor() }.
+function editorColunas(d, minha, aoMudar) {
+  const id = d.receita.id;
+  const itensSalvos = d.receita.itens;
+  // Linhas guardadas + a escolha "Temos?" de cada uma (os produtos foram salvos na ordem das linhas preenchidas).
+  let n = 0;
+  let linhas = (d.receita.linhas ?? []).map((l) => {
+    const it = linhaDaReceita(l) ? itensSalvos[n++] : null;
+    return { ...linhaVazia(), ...l, temos: !!(it && it.temos), qtd: it ? String(it.quantidade) : '1', valor: it && it.temos ? reaisParaCampo(it.valor_unitario_centavos) : '' };
+  });
+  const novaLinha = () => ({ ...linhaVazia(), temos: false, qtd: '1', valor: '' });
+  if (!linhas.length) linhas = [novaLinha()];
+
+  const lista = el('div', { class: 'remedios-lista', id: 'remedios-lista' });
+  const total = el('div', { class: 'produtos-total', id: 'produtos-total' });
+  const aviso = el('div', { class: 'aviso-peso produtos-aviso', id: 'produtos-aviso' });
+  const estado = el('div', { class: 'estado-salvo', id: 'produtos-estado', role: 'status' });
+  const adicionar = el('button', { type: 'button', class: 'secundario', id: 'adicionar-remedio' }, '+ Adicionar remédio');
+  const caixa = el('section', { class: 'cartao remedios-secao', id: 'remedios-secao' },
+    el('h2', {}, 'Remédios'),
+    el('p', { class: 'suave' }, 'Um remédio por linha. "Temos?", quantidade e valor são só para a equipe e não saem no papel.'),
+    lista, el('div', { class: 'acoes' }, adicionar), total, aviso, estado);
+
+  const quantidadeDe = (it) => lerQuantidade(it.qtd) ?? 1;
+  const valorDe = (it) => { const v = lerReais(it.valor); return v !== null && v <= MAX_VALOR_CENTAVOS ? v : null; };
+  const subtotalDe = (it) => (it.temos && valorDe(it) !== null ? quantidadeDe(it) * valorDe(it) : 0);
+  const preenchidas = () => linhas.filter((it) => linhaDaReceita(it));
+  const semValor = () => preenchidas().filter((it) => it.temos && valorDe(it) === null);
+  const descricao = (it) => linhaDaReceita(it, { marcas: false }).slice(0, 300);
+
+  function atualizarRodape() {
+    total.textContent = `Total dos produtos: ${formatarReais(linhas.reduce((t, it) => t + subtotalDe(it), 0))}`;
+    const faltam = semValor().length;
+    aviso.textContent = faltam === 1 ? "1 produto marcado como 'temos' está sem valor" : `${faltam} produtos marcados como 'temos' estão sem valor`;
+    aviso.hidden = faltam === 0;
+  }
+
+  // Sugestões do campo Remédio (nomes já usados em receitas liberadas).
+  function campoRemedio(it, aoEscolher) {
+    const entrada = el('input', { type: 'text', class: 'rem-remedio', 'data-campo': 'remedio', maxlength: 200, autocomplete: 'off', autocapitalize: 'sentences', placeholder: EXEMPLOS_COLUNAS.remedio, 'aria-label': ROTULOS_COLUNAS.remedio, value: it.remedio });
+    const chips = el('div', { class: 'chips-sugestao' });
+    let tempo = null; let numero = 0;
+    entrada.addEventListener('input', () => {
+      it.remedio = entrada.value;
+      clearTimeout(tempo);
+      const q = entrada.value.replace(/\*/g, '').trim();
+      if (q.length < 2) { numero += 1; chips.replaceChildren(); return; }
+      tempo = setTimeout(async () => {
+        const meu = ++numero;
+        try {
+          const { sugestoes } = await api('GET', '/api/sugestoes-receita?tipo=remedio&q=' + encodeURIComponent(q));
+          if (meu !== numero || minha !== versaoTela) return;
+          chips.replaceChildren(...sugestoes.slice(0, 5).map((s) => {
+            const b = el('button', { type: 'button', class: 'chip-sugestao' }, s.texto);
+            b.addEventListener('pointerdown', (ev) => ev.preventDefault()); // não fecha o teclado
+            b.addEventListener('click', () => { chips.replaceChildren(); aoEscolher(separarRemedioDose(s.texto)); });
+            return b;
+          }));
+        } catch { chips.replaceChildren(); }
+      }, 250);
+    });
+    entrada.addEventListener('blur', () => setTimeout(() => chips.replaceChildren(), 200));
+    return { entrada, chips };
+  }
+
+  function desenharLinha(it, pos) {
+    const subtotal = el('div', { class: 'produto-subtotal' });
+    const detalhes = el('div', { class: 'produto-detalhes' });
+    const linha = el('div', { class: 'remedio-linha' + (it.temos ? ' sim' : ''), 'data-pos': String(pos) });
+    const entradas = {};
+    for (const c of ['dose', 'como', 'intervalo', 'duracao']) {
+      entradas[c] = el('input', { type: 'text', 'data-campo': c, maxlength: 200, autocomplete: 'off', placeholder: EXEMPLOS_COLUNAS[c], 'aria-label': ROTULOS_COLUNAS[c], value: it[c] });
+      entradas[c].addEventListener('input', () => { it[c] = entradas[c].value; mudou(); });
+    }
+    const rem = campoRemedio(it, ({ remedio, dose }) => {
+      it.remedio = remedio; rem.entrada.value = remedio;
+      if (dose) { it.dose = dose; entradas.dose.value = dose; }
+      mudou();
+      (dose ? entradas.como : entradas.dose).focus();
+    });
+    rem.entrada.addEventListener('input', mudou);
+    // Enter no último campo da última linha abre uma linha nova (sem precisar tocar no botão).
+    entradas.duracao.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && pos === linhas.length - 1) { ev.preventDefault(); adicionarLinha(); } });
+
+    const nao = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'nao' }, 'Não');
+    const sim = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'sim' }, 'Sim');
+    const qtd = el('input', { type: 'text', inputmode: 'numeric', class: 'produto-qtd', 'aria-label': 'Quantidade', value: it.qtd, maxlength: 3, autocomplete: 'off' });
+    const valor = el('input', { type: 'text', inputmode: 'decimal', class: 'produto-valor', 'aria-label': 'Valor (R$)', value: it.valor, placeholder: '0,00', maxlength: 14, autocomplete: 'off' });
+    const atualizar = () => {
+      nao.setAttribute('aria-checked', String(!it.temos));
+      sim.setAttribute('aria-checked', String(it.temos));
+      linha.classList.toggle('sim', it.temos);
+      detalhes.hidden = !it.temos;
+      const q = lerQuantidade(it.qtd); const v = lerReais(it.valor);
+      qtd.classList.toggle('invalido', q === null);
+      valor.classList.toggle('invalido', it.valor.trim() !== '' && (v === null || v > MAX_VALOR_CENTAVOS));
+      subtotal.textContent = valorDe(it) !== null ? `Subtotal: ${formatarReais(subtotalDe(it))}` : '';
+      atualizarRodape();
+    };
+    const mudouProduto = () => { atualizar(); agendar(); };
+    nao.addEventListener('click', () => { it.temos = false; mudouProduto(); });
+    sim.addEventListener('click', () => { it.temos = true; mudouProduto(); if (valorDe(it) === null) valor.focus(); });
+    qtd.addEventListener('input', () => { it.qtd = qtd.value; mudouProduto(); });
+    valor.addEventListener('input', () => { it.valor = valor.value; mudouProduto(); });
+    detalhes.append(
+      el('label', { class: 'produto-campo' }, 'Qtd', qtd),
+      el('label', { class: 'produto-campo' }, 'Valor (R$)', valor),
+      subtotal);
+    it.campoValor = valor;
+    it.campoRemedio = rem.entrada;
+
+    const remover = el('button', { type: 'button', class: 'secundario remover-remedio', 'aria-label': `Remover remédio ${pos + 1}`, onclick: () => {
+      linhas.splice(pos, 1);
+      if (!linhas.length) linhas.push(novaLinha());
+      desenhar(); mudou();
+    } }, 'remover');
+    const rotulo = (c, campoEl) => el('label', { class: 'rem-campo rem-' + c }, ROTULOS_COLUNAS[c], campoEl);
+    linha.append(
+      el('div', { class: 'rem-remedio rem-campo' }, el('label', {}, ROTULOS_COLUNAS.remedio, rem.entrada), rem.chips),
+      rotulo('dose', entradas.dose), rotulo('como', entradas.como), rotulo('intervalo', entradas.intervalo), rotulo('duracao', entradas.duracao),
+      el('div', { class: 'rem-temos' },
+        el('span', { class: 'produto-pergunta' }, 'Temos?'),
+        el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': `Temos o remédio ${pos + 1}?` }, nao, sim)),
+      detalhes, remover);
+    atualizar();
+    return linha;
+  }
+
+  function desenhar() {
+    lista.replaceChildren(...linhas.map(desenharLinha));
+    atualizarRodape();
+    total.hidden = false;
+  }
+  function adicionarLinha() {
+    linhas.push(novaLinha());
+    desenhar();
+    linhas[linhas.length - 1].campoRemedio.focus();
+    linhas[linhas.length - 1].campoRemedio.scrollIntoView({ block: 'center' });
+  }
+  adicionar.addEventListener('click', adicionarLinha);
+
+  // ----- salvar os produtos (1 s depois da última mudança); o texto e as linhas a tela grava -----
+  const corpoItens = () => ({ itens: preenchidas().map((it) => ({
+    descricao: descricao(it), temos: it.temos, quantidade: it.temos ? quantidadeDe(it) : 1, valor_unitario_centavos: it.temos ? valorDe(it) : null,
+  })) });
+  let ultimoEnvio = JSON.stringify(corpoItens());
+  let tempo = null; let salvando = null; let bloqueado = false;
+  async function salvarAgora() {
+    clearTimeout(tempo);
+    if (salvando) await salvando;
+    const envio = corpoItens(); const txt = JSON.stringify(envio);
+    if (txt === ultimoEnvio || bloqueado) return;
+    estado.textContent = 'Salvando…'; estado.className = 'estado-salvo';
+    salvando = (async () => {
+      try {
+        await api('PUT', `/api/receitas/${id}/itens`, envio);
+        ultimoEnvio = txt;
+        estado.textContent = 'Salvo';
+      } catch (e) {
+        if (e.status === 409 || e.status === 403) { bloqueado = true; estado.textContent = 'Não salvo'; estado.className = 'estado-salvo erro'; return; }
+        estado.textContent = 'Não salvo — tentando de novo…'; estado.className = 'estado-salvo erro';
+        tempo = setTimeout(salvarAgora, 4000);
+      } finally { salvando = null; }
+    })();
+    await salvando;
+  }
+  function agendar() {
+    estado.textContent = 'Salvando…'; estado.className = 'estado-salvo';
+    clearTimeout(tempo);
+    tempo = setTimeout(salvarAgora, 1000);
+  }
+  function mudou() { atualizarRodape(); agendar(); aoMudar(); }
+  const aoSair = () => { if (document.visibilityState === 'hidden') salvarAgora(); };
+  document.addEventListener('visibilitychange', aoSair);
+  window.addEventListener('hashchange', () => { document.removeEventListener('visibilitychange', aoSair); salvarAgora(); }, { once: true });
+
+  desenhar();
+  estado.textContent = itensSalvos.length ? 'Salvo' : '';
+  return {
+    caixa,
+    linhas: () => linhas.map((it) => Object.fromEntries(CAMPOS.map((c) => [c, it[c]]))),
+    texto: () => textoDasLinhas(linhas),
+    aoMudarTexto() {},
+    salvarAgora,
+    parar() { bloqueado = true; clearTimeout(tempo); },
+    semValor: () => semValor().map(descricao),
+    focarPrimeiroSemValor() {
+      const it = semValor()[0];
+      if (it && it.campoValor) { it.campoValor.scrollIntoView({ block: 'center' }); it.campoValor.focus(); }
+    },
+  };
+}
+
 // Pergunta, uma vez por tentativa de liberar, o que fazer com produtos sem valor.
 // Devolve 'valor' (voltar e digitar) ou 'liberar' (seguir mesmo assim). Esc = voltar.
 function dialogoSemValor(descricoes) {
@@ -1633,7 +1894,7 @@ function dialogoSemValor(descricoes) {
   });
 }
 
-async function telaReceita(id) {
+async function telaReceita(id, consulta = '') {
   const minha = versaoTela;
   carregando();
   let d;
@@ -1642,6 +1903,11 @@ async function telaReceita(id) {
   if (d.receita.status !== 'rascunho') { telaReceitaLeitura(d, minha); return; }
   const r = d.receita;
   const ehVet = usuario.papel === 'veterinario';
+  // Padrão: remédios em colunas. Receita antiga (só texto) ou "Colar texto do WhatsApp": texto livre.
+  const modoColunas = new URLSearchParams(consulta).get('modo') !== 'texto' && (r.linhas !== null || !r.texto.trim());
+  const colunas = modoColunas ? editorColunas(d, minha, () => agendar()) : null;
+  // Quando um colega pediu esta receita, o botão principal envia para ele em um toque.
+  const pediu = r.solicitada_por_usuario && r.solicitada_por_usuario.id !== usuario.id ? r.solicitada_por_usuario : null;
 
   const texto = el('textarea', { id: 'receita-texto', class: 'receita-texto', rows: 10, placeholder: 'Escreva ou cole aqui o texto do WhatsApp', 'aria-label': 'Receita', maxlength: 10000, autocomplete: 'off', autocapitalize: 'sentences' }, r.texto);
   const orient = el('textarea', { id: 'receita-orientacoes', class: 'receita-orient', rows: 4, maxlength: 5000, 'aria-label': 'Orientações', placeholder: 'Cuidados para o tutor (alimentação, repouso, retorno…)' }, r.orientacoes || '');
@@ -1654,22 +1920,27 @@ async function telaReceita(id) {
   const crescer = (t) => { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; };
 
   // ----- salvar sozinho (1,5 s depois de parar de digitar) -----
-  let salvo = { texto: r.texto, orientacoes: r.orientacoes || '' };
+  // O que vai para o servidor: em colunas, o texto é gerado das linhas e as linhas vão junto.
+  const envioAtual = () => (modoColunas
+    ? { texto: colunas.texto(), linhas_json: colunas.linhas(), orientacoes: orient.value }
+    : { texto: texto.value, orientacoes: orient.value });
+  let salvo = JSON.stringify(envioAtual());
   let tempoSalvar = null;
   let salvando = null; // promessa do salvamento em andamento
   let bloqueada = false; // true depois que a receita sai do rascunho
-  const mudou = () => texto.value !== salvo.texto || orient.value !== salvo.orientacoes;
+  const mudou = () => JSON.stringify(envioAtual()) !== salvo;
   async function salvarAgora() {
     clearTimeout(tempoSalvar);
     if (salvando) { await salvando; }
     if (!mudou() || bloqueada) return;
-    const envio = { texto: texto.value, orientacoes: orient.value };
+    const envio = envioAtual();
+    const txtEnvio = JSON.stringify(envio);
     estado.textContent = 'Salvando…';
     estado.className = 'estado-salvo';
     salvando = (async () => {
       try {
         await api('PATCH', `/api/receitas/${id}`, envio);
-        salvo = envio;
+        salvo = txtEnvio;
         estado.textContent = mudou() ? 'Salvando…' : 'Salvo';
       } catch (e) {
         if (e.status === 409) { bloqueada = true; estado.textContent = 'Não salvo'; avisos.replaceChildren(caixaMensagem('erro', e.message)); return; }
@@ -1728,7 +1999,7 @@ async function telaReceita(id) {
     }, 250);
   }
 
-  const produtos = secaoProdutos(d, () => texto.value, minha);
+  const produtos = colunas || secaoProdutos(d, () => texto.value, minha);
   texto.addEventListener('input', () => {
     if (/[​-‍⁠﻿\r]/.test(texto.value)) { // texto colado do WhatsApp pode trazer caracteres invisíveis
       const pos = limparInvisiveis(texto.value.slice(0, texto.selectionStart)).length;
@@ -1756,24 +2027,53 @@ async function telaReceita(id) {
     botao.disabled = false;
   };
 
-  const liberar = el('button', { type: 'button', class: 'grande bloco', id: 'liberar' }, 'Liberar para impressão');
-  liberar.addEventListener('click', comAviso(liberar, async () => {
+  // Antes de liberar: grava tudo, confere o texto e avisa (uma vez) sobre produtos sem valor.
+  // Devolve false se a pessoa voltou para corrigir.
+  async function prepararLiberacao() {
     await salvarAgora();
     await produtos.salvarAgora();
-    if (!texto.value.trim()) throw new Error('Escreva a receita antes de liberar.');
-    // Produto marcado como "temos" sem valor: avisa UMA vez e deixa a pessoa escolher.
+    if (!(colunas ? colunas.texto() : texto.value).trim()) throw new Error('Escreva a receita antes de liberar.');
     const faltam = produtos.semValor();
-    if (faltam.length && (await dialogoSemValor(faltam)) === 'valor') { produtos.focarPrimeiroSemValor(); return; }
-    // O CRMV vem da lista de veterinários (a sessão não o carrega).
+    if (faltam.length && (await dialogoSemValor(faltam)) === 'valor') { produtos.focarPrimeiroSemValor(); return false; }
+    return true;
+  }
+  // "Assinada por Dra. Elizabeth — CRMV …" (o CRMV vem da lista de veterinários; a sessão não o carrega).
+  async function textoAssinatura() {
     const eu = (await api('GET', '/api/usuarios/veterinarios')).veterinarios.find((v) => v.id === usuario.id);
     const crmv = eu && eu.crmv ? rotuloCrmv(eu.crmv) : 'sem CRMV cadastrado (peça ao administrador)';
-    if (!(await confirmar(`Liberar a receita de ${d.pet.nome}?`, [`Assinada por ${comTratamento(usuario.nome)} — ${crmv}.`, 'Depois de liberada não pode ser editada.'], 'Sim, liberar'))) return;
+    return `Assinada por ${comTratamento(usuario.nome)} — ${crmv}.`;
+  }
+
+  const liberarSo = async () => {
+    if (!(await prepararLiberacao())) return;
+    const assinatura = await textoAssinatura();
+    if (!(await confirmar(`Liberar a receita de ${d.pet.nome}?`, [assinatura, 'Depois de liberada não pode ser editada.'], 'Sim, liberar'))) return;
     const nova = await api('POST', `/api/receitas/${id}/liberar`, {});
     bloqueada = true;
+    if (colunas) colunas.parar();
     telaReceitaLeitura(nova, minha, 'Receita liberada. A recepção foi avisada para imprimir.');
-  }));
+  };
 
-  const pedir = el('button', { type: 'button', class: 'secundario bloco', id: 'pedir' }, 'Enviar pelo WhatsApp para outro veterinário');
+  // Um toque: grava, libera para a impressão e abre o WhatsApp de quem pediu.
+  const enviarColega = async () => {
+    if (!(await prepararLiberacao())) return;
+    const assinatura = await textoAssinatura();
+    const nomeColega = comTratamento(pediu.nome);
+    if (!(await confirmar(`Enviar a receita de ${d.pet.nome}?`, [assinatura, `Vai para a impressão e abre o WhatsApp de ${nomeColega}. Depois de enviada não pode ser editada.`], 'Enviar', 'Voltar'))) return;
+    const nova = await api('POST', `/api/receitas/${id}/liberar`, {});
+    bloqueada = true;
+    if (colunas) colunas.parar();
+    telaReceitaLeitura(nova, minha, `Receita liberada e enviada para a impressão. Abrindo o WhatsApp de ${nomeColega}…`);
+    const msg = `Pronto, ${pediu.nome}! A receita do *${d.pet.nome}* já foi para a impressão na recepção: ${location.origin}/#/receita/${id}`;
+    location.href = linkWhatsapp(pediu, msg); // jeito que funciona no iPhone, inclusive no app instalado
+  };
+
+  const liberar = el('button', { type: 'button', class: 'grande bloco', id: pediu ? 'enviar-colega' : 'liberar' }, pediu ? `Enviar para ${comTratamento(pediu.nome)}` : 'Liberar para impressão');
+  liberar.addEventListener('click', comAviso(liberar, pediu ? enviarColega : liberarSo));
+  const soLiberar = pediu ? el('button', { type: 'button', class: 'secundario bloco', id: 'so-liberar' }, 'Só liberar para impressão') : null;
+  if (soLiberar) soLiberar.addEventListener('click', comAviso(soLiberar, liberarSo));
+
+  const pedir = el('button', { type: 'button', class: 'secundario bloco', id: 'pedir' }, 'Pedir para um colega escrever (WhatsApp)');
   pedir.addEventListener('click', comAviso(pedir, async () => {
     await salvarAgora();
     await produtos.salvarAgora();
@@ -1790,6 +2090,22 @@ async function telaReceita(id) {
       avisos.replaceChildren(caixaMensagem('ok', `Pedido registrado para ${vet.nome}. Abrindo o WhatsApp…`));
       location.href = linkWhatsapp(vet, mensagemPedido(novo, vet, nota)); // jeito que funciona no iPhone, inclusive no app instalado
     });
+  }));
+
+  // Alternar entre colunas e texto livre ("Colar texto do WhatsApp").
+  const alternarModo = el('button', { type: 'button', class: 'secundario', id: colunas ? 'modo-texto' : 'modo-colunas' }, colunas ? 'Colar texto do WhatsApp' : 'Usar colunas');
+  alternarModo.addEventListener('click', comAviso(alternarModo, async () => {
+    if (colunas) {
+      // O texto já está gerado: grava tudo e solta as colunas (a receita passa a ser só texto).
+      await salvarAgora();
+      await colunas.salvarAgora();
+      await api('PATCH', `/api/receitas/${id}`, { texto: colunas.texto(), linhas_json: null });
+      irPara(`#/receita/${id}?modo=texto`);
+    } else {
+      if (texto.value.trim()) throw new Error('As colunas só podem ser usadas em uma receita vazia. Apague o texto antes.');
+      await salvarAgora();
+      irPara(`#/receita/${id}`);
+    }
   }));
 
   const previa = el('button', { type: 'button', class: 'secundario bloco', id: 'ver-previa' }, 'Ver como vai sair');
@@ -1813,18 +2129,24 @@ async function telaReceita(id) {
       ? el('div', { class: 'mensagem ok' }, `${r.solicitada_por_nome} pediu esta receita para você${r.nota_pedido ? ': ' + r.nota_pedido : '.'}`) : null,
     r.solicitada_a_nome && r.solicitada_a !== usuario.id ? el('div', { class: 'mensagem ok' }, `Pedida a ${r.solicitada_a_nome}${r.nota_pedido ? ' — ' + r.nota_pedido : ''}.`) : null,
     r.versao > 1 ? el('div', { class: 'suave' }, 'Esta é uma nova versão: ao liberar, a versão anterior é cancelada.') : null,
-    el('label', { for: 'receita-texto', class: 'rotulo-receita' }, 'Receita'),
-    texto, estado, sugestoes,
-    el('div', { class: 'acoes' }, modelo),
+    colunas ? null : el('label', { for: 'receita-texto', class: 'rotulo-receita' }, 'Receita'),
+    colunas ? null : texto, estado, colunas ? null : sugestoes,
+    colunas ? null : el('div', { class: 'acoes' }, modelo),
+    colunas ? colunas.caixa : null,
     blocoOrient,
-    produtos.caixa,
+    colunas ? null : produtos.caixa,
+    el('div', { class: 'acoes' }, alternarModo),
     avisos,
     el('div', { class: 'botoes-receita' },
-      ehVet ? liberar : el('p', { class: 'suave' }, 'Só o veterinário libera a receita. Envie para o veterinário liberar.'),
-      pedir, previa, cancelar));
-  crescer(texto); crescer(orient);
-  texto.focus();
-  texto.setSelectionRange(texto.value.length, texto.value.length);
+      ehVet ? [liberar, soLiberar] : el('p', { class: 'suave' }, 'Só o veterinário libera a receita. Envie para o veterinário liberar.'),
+      pediu && ehVet ? null : pedir, previa, cancelar));
+  if (colunas) raiz.classList.add('colunas');
+  crescer(orient);
+  if (!colunas) {
+    crescer(texto);
+    texto.focus();
+    texto.setSelectionRange(texto.value.length, texto.value.length);
+  }
 }
 
 // Receita já liberada (ou impressa/entregue/cancelada): só leitura.
@@ -2112,13 +2434,17 @@ function rotear() {
   const n = Number(partes[1]);
   const [rota, , acao] = partes;
   if (rota === 'hoje' || rota === '') return telaHoje();
-  if (rota === 'busca') { const qs = new URLSearchParams(consulta); return telaBusca(qs.get('q') || '', qs.get('modo') || ''); }
-  if (rota === 'chegada' && n) return telaChegada(n);
+  if (rota === 'busca') {
+    const qs = new URLSearchParams(consulta);
+    if (qs.get('modo') === 'chegada') return irPara('#/chegada/nova'); // endereço antigo
+    return telaBusca(qs.get('q') || '');
+  }
+  if (rota === 'chegada') return telaChegadaNova(n || null); // #/chegada/nova ou #/chegada/<id do pet>
   if (rota === 'atendimento' && n && acao === 'editar') return telaEditarAtendimento(n);
-  if (rota === 'receita' && n) return acao === 'imprimir' ? telaImprimirReceita(n) : telaReceita(n);
+  if (rota === 'receita' && n) return acao === 'imprimir' ? telaImprimirReceita(n) : telaReceita(n, consulta);
   if (rota === 'receitas' && partes[1] === 'imprimir') return telaReceitasImprimir();
   if (rota === 'receitas' && partes[1] === 'transcrever') return telaTranscrever(consulta);
-  if (rota === 'cadastro') return telaCadastro();
+  if (rota === 'cadastro') return irPara('#/chegada/nova'); // endereço antigo do cadastro rápido
   if (rota === 'notificacoes') return telaNotificacoes();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();
   if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n);

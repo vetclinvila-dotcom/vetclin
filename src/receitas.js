@@ -12,6 +12,9 @@ const MAX_ORIENTACOES = 5000;
 const MSG_JA_LIBERADA = 'Receita já liberada. Crie uma nova versão para corrigir.';
 const STATUS_VISIVEIS_RECEPCAO = ['liberada', 'impressa', 'entregue'];
 const MAX_ITENS = 100;
+const MAX_LINHAS = 100; // remédios (colunas) por receita
+const MAX_CAMPO_LINHA = 200;
+const CAMPOS_LINHA = ['remedio', 'dose', 'como', 'intervalo', 'duracao'];
 const MAX_DESCRICAO_ITEM = 300;
 const MAX_QUANTIDADE = 999;
 const MAX_VALOR_CENTAVOS = 10_000_000; // R$ 100.000,00 por unidade
@@ -62,10 +65,37 @@ function primeiraLinha(t) {
   return l.length > 80 ? l.slice(0, 80) + '…' : l;
 }
 
+// Confere a lista de remédios (colunas) enviada pela tela. null = receita em texto livre.
+// Devolve a lista limpa (só os 5 campos, cada um texto de até 200 letras).
+export function lerLinhas(valor) {
+  if (valor === null) return null;
+  if (!Array.isArray(valor)) throw new ErroHttp(400, 'A lista de remédios deve ser uma lista.');
+  if (valor.length > MAX_LINHAS) throw new ErroHttp(400, `Há remédios demais (máximo ${MAX_LINHAS}).`);
+  return valor.map((x, n) => {
+    if (x === null || typeof x !== 'object' || Array.isArray(x)) throw new ErroHttp(400, `Dados inválidos no remédio ${n + 1}.`);
+    const linha = {};
+    for (const campo of CAMPOS_LINHA) {
+      const v = x[campo] ?? '';
+      if (typeof v !== 'string') throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} deve ser um texto.`);
+      const t = v.replace(/[​-‍⁠﻿]/g, '').replace(/\s+/g, ' ').trim();
+      if (t.length > MAX_CAMPO_LINHA) throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} está grande demais (máximo ${MAX_CAMPO_LINHA} letras).`);
+      linha[campo] = t;
+    }
+    return linha;
+  });
+}
+
+// O que está guardado no banco -> lista (ou null).
+function linhasDoBanco(json) {
+  if (!json) return null;
+  try { const l = JSON.parse(json); return Array.isArray(l) ? l : null; } catch { return null; }
+}
+
 // Resumo do que mudou (sem o texto clínico, só tamanhos) para o registro de ações.
 const resumoReceita = (r) => ({
   status: r.status, versao: r.versao, texto_tamanho: (r.texto ?? '').length, orientacoes_tamanho: (r.orientacoes ?? '').length,
   veterinario_id: r.veterinario_id ?? null, solicitada_a: r.solicitada_a ?? null,
+  ...(r.linhas_json ? { remedios: (linhasDoBanco(r.linhas_json) ?? []).length } : {}),
 });
 
 // ---------- leitura ----------
@@ -73,7 +103,7 @@ const SELECT_RECEITA = `
   SELECT r.*, p.nome AS pet_nome, p.especie, p.raca, p.sexo, p.idade_anos, p.idade_meses, p.tutor_id,
          t.nome AS tutor_nome, t.whatsapp AS tutor_whatsapp,
          v.nome AS vet_nome, v.crmv AS vet_crmv,
-         sp.nome AS solicitada_por_nome, sa.nome AS solicitada_a_nome, cp.nome AS criado_por_nome
+         sp.nome AS solicitada_por_nome, sp.whatsapp AS solicitada_por_whatsapp, sa.nome AS solicitada_a_nome, cp.nome AS criado_por_nome
     FROM receitas r
     JOIN pets p ON p.id = r.pet_id
     JOIN tutores t ON t.id = p.tutor_id
@@ -138,13 +168,15 @@ async function detalheReceita(env, id) {
   const proxima = await env.DB.prepare('SELECT id, status FROM receitas WHERE receita_anterior_id = ? ORDER BY id DESC LIMIT 1').bind(id).first();
   return {
     receita: {
-      id: r.id, status: r.status, versao: r.versao, texto: r.texto, orientacoes: r.orientacoes ?? '',
+      id: r.id, status: r.status, versao: r.versao, texto: r.texto, linhas: linhasDoBanco(r.linhas_json), orientacoes: r.orientacoes ?? '',
       origem: r.origem, criado_por_nome: r.criado_por_nome ?? null,
       pet_id: r.pet_id, atendimento_id: r.atendimento_id ?? null, criado_em: r.criado_em, atualizado_em: r.atualizado_em,
       liberada_em: r.liberada_em ?? null, impressa_em: r.impressa_em ?? null, vezes_impressa: r.vezes_impressa,
       entregue_em: r.entregue_em ?? null, cancelada_em: r.cancelada_em ?? null,
       solicitada_a: r.solicitada_a ?? null, solicitada_a_nome: r.solicitada_a_nome ?? null,
       solicitada_por: r.solicitada_por ?? null, solicitada_por_nome: r.solicitada_por_nome ?? null, nota_pedido: r.nota_pedido ?? null,
+      // Quem pediu (para o botão "Enviar para o colega"): id, nome e WhatsApp.
+      solicitada_por_usuario: r.solicitada_por ? { id: r.solicitada_por, nome: r.solicitada_por_nome ?? '', whatsapp: r.solicitada_por_whatsapp ?? null } : null,
       receita_anterior_id: r.receita_anterior_id ?? null,
       versao_seguinte: proxima ? { id: proxima.id, status: proxima.status } : null,
       ...(await produtosDaReceita(env, id)),
@@ -223,11 +255,15 @@ async function receitasAlterar(request, env, id) {
   const novo = { ...antes };
   if (c.texto !== undefined) novo.texto = limparTexto(c.texto, 'receita', MAX_TEXTO);
   if (c.orientacoes !== undefined) novo.orientacoes = limparTexto(c.orientacoes, 'orientações', MAX_ORIENTACOES) || null;
-  if (novo.texto === antes.texto && novo.orientacoes === antes.orientacoes) return json({ ok: true, atualizado_em: antes.atualizado_em });
+  if (c.linhas_json !== undefined) {
+    const l = lerLinhas(c.linhas_json);
+    novo.linhas_json = l === null ? null : JSON.stringify(l);
+  }
+  if (novo.texto === antes.texto && novo.orientacoes === antes.orientacoes && novo.linhas_json === antes.linhas_json) return json({ ok: true, atualizado_em: antes.atualizado_em });
 
   const agora = agoraISO();
-  const r = await env.DB.prepare(`UPDATE receitas SET texto = ?, orientacoes = ?, atualizado_em = ? WHERE id = ? AND status = 'rascunho'`)
-    .bind(novo.texto, novo.orientacoes, agora, id).run();
+  const r = await env.DB.prepare(`UPDATE receitas SET texto = ?, orientacoes = ?, linhas_json = ?, atualizado_em = ? WHERE id = ? AND status = 'rascunho'`)
+    .bind(novo.texto, novo.orientacoes, novo.linhas_json ?? null, agora, id).run();
   if (!r.meta.changes) throw new ErroHttp(409, MSG_JA_LIBERADA);
 
   const ultimo = await env.DB.prepare(`SELECT id, usuario_id, acao, em FROM registro_acoes WHERE entidade = 'receitas' AND entidade_id = ? ORDER BY id DESC LIMIT 1`).bind(id).first();
@@ -256,11 +292,25 @@ export function linhasParaSugestao(textoReceita) {
 
 // Comandos que ensinam as sugestões com as linhas da receita liberada.
 // (Futuro: o módulo de estoque também vai alimentar esta tabela.)
-function comandosSugestoes(env, textoReceita, agora) {
-  return linhasParaSugestao(textoReceita).map(({ chave, linha }) => env.DB.prepare(
-    `INSERT INTO sugestoes_receita (texto, texto_busca, vezes, ultimo_uso) VALUES (?, ?, 1, ?)
-     ON CONFLICT(texto_busca) DO UPDATE SET vezes = vezes + 1, ultimo_uso = excluded.ultimo_uso`
-  ).bind(linha, chave, agora));
+// Receita em colunas: também aprende "remédio + dose" (para sugerir no campo Remédio).
+export function remediosParaSugestao(linhas) {
+  const vistos = new Map();
+  for (const l of linhas ?? []) {
+    const nome = `${l?.remedio ?? ''} ${l?.dose ?? ''}`.replace(/\s+/g, ' ').trim();
+    const chave = normalizarBusca(nome);
+    if (chave.length < 3 || vistos.has(chave)) continue;
+    vistos.set(chave, nome);
+  }
+  return [...vistos.entries()].map(([chave, nome]) => ({ chave, nome }));
+}
+
+function comandosSugestoes(env, textoReceita, agora, linhas = null) {
+  const sql = `INSERT INTO sugestoes_receita (texto, texto_busca, vezes, ultimo_uso, tipo) VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT(texto_busca) DO UPDATE SET vezes = vezes + 1, ultimo_uso = excluded.ultimo_uso`;
+  return [
+    ...linhasParaSugestao(textoReceita).map(({ chave, linha }) => env.DB.prepare(sql).bind(linha, chave, agora, 'linha')),
+    ...remediosParaSugestao(linhas).map(({ chave, nome }) => env.DB.prepare(sql).bind(nome, chave, agora, 'remedio')),
+  ];
 }
 
 async function receitasLiberar(request, env, id) {
@@ -282,7 +332,7 @@ async function receitasLiberar(request, env, id) {
     ).bind(agora, u.id, agora, antes.receita_anterior_id));
     comandos.push(prepararAcao(env, { usuarioId: u.id, acao: 'cancelar_receita_substituida', entidade: 'receitas', entidadeId: antes.receita_anterior_id, depois: { substituida_por: id }, ip: ipDe(request) }));
   }
-  comandos.push(...comandosSugestoes(env, antes.texto, agora));
+  comandos.push(...comandosSugestoes(env, antes.texto, agora, linhasDoBanco(antes.linhas_json)));
   comandos.push(prepararAcao(env, {
     usuarioId: u.id, acao: 'liberar_receita', entidade: 'receitas', entidadeId: id,
     antes: resumoReceita(antes), depois: { ...resumoReceita({ ...antes, status: 'liberada', veterinario_id: u.id }), receita_anterior_id: antes.receita_anterior_id ?? null }, ip: ipDe(request),
@@ -377,9 +427,9 @@ async function receitasNovaVersao(request, env, id) {
   if (jaTem) return json({ ...(await detalheReceita(env, jaTem.id)), existente: true });
   const agora = agoraISO();
   const r = await env.DB.prepare(
-    `INSERT INTO receitas (pet_id, atendimento_id, criado_por, texto, orientacoes, status, versao, receita_anterior_id, criado_em, atualizado_em)
-     VALUES (?, ?, ?, ?, ?, 'rascunho', ?, ?, ?, ?)`
-  ).bind(base.pet_id, base.atendimento_id, u.id, base.texto, base.orientacoes, base.versao + 1, id, agora, agora).run();
+    `INSERT INTO receitas (pet_id, atendimento_id, criado_por, texto, linhas_json, orientacoes, status, versao, receita_anterior_id, criado_em, atualizado_em)
+     VALUES (?, ?, ?, ?, ?, ?, 'rascunho', ?, ?, ?, ?)`
+  ).bind(base.pet_id, base.atendimento_id, u.id, base.texto, base.linhas_json ?? null, base.orientacoes, base.versao + 1, id, agora, agora).run();
   const novoId = r.meta.last_row_id;
   // Os produtos e valores já digitados vão junto para a nova versão.
   await env.DB.prepare(
@@ -519,10 +569,12 @@ async function receitasListar(request, env) {
 // Sugestões de linha (aprendidas das receitas liberadas).
 async function sugestoesListar(request, env) {
   await exigirPapel(request, env, PAPEIS_CLINICOS);
-  const q = normalizarBusca(new URL(request.url).searchParams.get('q') ?? '').replace(/\*/g, '');
+  const qs = new URL(request.url).searchParams;
+  const q = normalizarBusca(qs.get('q') ?? '').replace(/\*/g, '');
   if (q.length < 2) return json({ sugestoes: [] });
+  const tipo = qs.get('tipo') === 'remedio' ? 'remedio' : 'linha'; // ?tipo=remedio: só nome + dose
   const { results } = await env.DB.prepare(
-    `SELECT id, texto, vezes FROM sugestoes_receita WHERE texto_busca LIKE ? ESCAPE '\\'
+    `SELECT id, texto, vezes FROM sugestoes_receita WHERE tipo = '${tipo}' AND texto_busca LIKE ? ESCAPE '\\'
       ORDER BY (texto_busca LIKE ? ESCAPE '\\') DESC, vezes DESC, ultimo_uso DESC, id LIMIT 8`
   ).bind(likeSeguro(q), likeSeguro(q).slice(1)).all();
   return json({ sugestoes: results });
