@@ -6,6 +6,9 @@ import { cartaoNotificacoes } from './notificacoes-app.js';
 import { itensDoTexto } from './produtos-receita.js';
 import { CAMPOS, VIAS, VIA_PADRAO, gruposDasLinhas, linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from './receita-linhas.js';
 import { MAX_VALOR_CENTAVOS, formatarReais, lerReais, reaisParaCampo } from './dinheiro.js';
+import { mascararChave, payloadPix, txidDoPedido } from './pix.js';
+import { qrParaSvg } from './qr.js';
+import { linkWhatsapp as linkWhatsappFinanceiro, montarMensagemFinanceiro, nomeArquivoComprovante } from './mensagem-financeiro.js';
 import { ROTULO_CATEGORIA, ROTULO_FORMA, atualizarDaReceita, estadoDaConta, receitaDesatualizada, totalDosItens, trocoDe } from './conta-regras.js';
 
 const raiz = document.getElementById('app');
@@ -353,7 +356,7 @@ function dialogoCampo({ titulo, texto = null, rotulo, rotuloOk, tipo = 'texto', 
       texto ? el('p', {}, texto) : null,
       el('label', { for: 'dialogo-campo' }, rotulo), entrada, area,
       el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'dialogo-voltar' }, 'Voltar')));
-    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    const fechar = (v) => { clearTimeout(tempoPix); d.close(); d.remove(); resolve(v); };
     ok.addEventListener('click', async () => {
       area.replaceChildren();
       ok.disabled = true;
@@ -2595,7 +2598,10 @@ function secaoDadosClinica() {
     try {
       const c = await api('GET', '/api/configuracoes/clinica');
       const form = formulario(async (v) => {
-        await api('PATCH', '/api/configuracoes/clinica', { clinica_nome: v.clinica_nome, clinica_endereco: v.clinica_endereco, clinica_telefone: v.clinica_telefone, clinica_cidade: v.clinica_cidade, consulta_hora_corte: v.consulta_hora_corte });
+        await api('PATCH', '/api/configuracoes/clinica', { clinica_nome: v.clinica_nome, clinica_endereco: v.clinica_endereco, clinica_telefone: v.clinica_telefone, clinica_cidade: v.clinica_cidade, consulta_hora_corte: v.consulta_hora_corte, pix_chave: v.pix_chave, pix_nome: v.pix_nome, pix_cidade: v.pix_cidade, financeiro_whatsapp: v.financeiro_whatsapp });
+        // O servidor padroniza a chave, o nome e a cidade; mostramos como ficaram salvos.
+        const salvo = await api('GET', '/api/configuracoes/clinica');
+        for (const k of ['pix_chave', 'pix_nome', 'pix_cidade', 'financeiro_whatsapp']) form.elements[k].value = salvo[k];
         form.querySelector('.ok-clinica').replaceChildren(caixaMensagem('ok', 'Dados da clínica salvos.'));
         form.querySelector('button[type="submit"]').disabled = false;
       },
@@ -2605,6 +2611,15 @@ function secaoDadosClinica() {
         campo('Telefone', 'clinica_telefone', { value: c.clinica_telefone, type: 'tel', autocomplete: 'off' }),
         campo('Cidade (aparece na data)', 'clinica_cidade', { value: c.clinica_cidade, autocomplete: 'off' }),
         campo('Consulta: horário em que passa a valer o preço da noite', 'consulta_hora_corte', { type: 'time', value: c.consulta_hora_corte || '18:00' }),
+        el('h3', { class: 'sub-secao' }, 'Pix (QR Code)'),
+        el('p', { class: 'suave' }, 'Mostra o QR Code do Pix na hora de receber. Deixe a chave em branco para não mostrar.'),
+        campo('Chave Pix', 'pix_chave', { value: c.pix_chave, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'dica-pix-chave' }),
+        el('p', { class: 'suave dica-campo', id: 'dica-pix-chave' }, 'CPF, CNPJ, telefone, e-mail ou chave aleatória'),
+        campo('Nome do recebedor (como está no banco)', 'pix_nome', { value: c.pix_nome, autocomplete: 'off', maxlength: 60 }),
+        campo('Cidade', 'pix_cidade', { value: c.pix_cidade, autocomplete: 'off', maxlength: 60 }),
+        el('p', { class: 'suave dica-campo' }, 'O nome e a cidade são gravados sem acento e em maiúsculas, como o Pix pede.'),
+        el('h3', { class: 'sub-secao' }, 'Comprovantes'),
+        campo('WhatsApp do financeiro (opcional — usado quando o aparelho não consegue compartilhar a foto)', 'financeiro_whatsapp', { value: c.financeiro_whatsapp, type: 'tel', autocomplete: 'off' }),
         el('div', { class: 'ok-clinica' }),
         el('button', { type: 'submit' }, 'Salvar dados da clínica'));
       caixa.replaceChildren(el('h2', {}, 'Dados da clínica'), form);
@@ -2619,15 +2634,20 @@ const PODE_CANCELAR_CONTA = ['veterinario', 'suporte']; // (administradores tamb
 
 // Janela para receber um pagamento: forma (3 botões grandes), valor, dinheiro recebido/troco e foto do comprovante.
 // "aoConfirmar(corpo)" chama a API; se lançar erro, a mensagem aparece na janela. Devolve true se registrou.
-function dialogoPagamento({ restante, pet }) {
+// "pix" = dados do Pix da clínica (ou null); "pedidoId"/"sequencia" montam o identificador do Pix;
+// "podeEnviarRecepcao" = a conta ainda não foi para a recepção (cartão é na maquininha de lá).
+function dialogoPagamento({ restante, pet, pix = null, pedidoId = 0, sequencia = 1, podeEnviarRecepcao = false }) {
   return new Promise((resolve) => {
     let forma = '';
+    let cartaoAqui = false; // true depois de tocar em "Já passei o cartão aqui"
     const area = el('div');
     const valorEntrada = el('input', { id: 'pag-valor', type: 'text', inputmode: 'decimal', autocomplete: 'off', value: reaisParaCampo(restante), class: 'campo-valor' });
     const recebidoEntrada = el('input', { id: 'pag-recebido', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'ex.: 100,00', class: 'campo-valor' });
     const troco = el('p', { class: 'troco', id: 'pag-troco', role: 'status' });
     const blocoDinheiro = el('div', { class: 'bloco-dinheiro', hidden: true }, el('label', { for: 'pag-recebido' }, 'Recebido do cliente (R$)'), recebidoEntrada, troco);
     const foto = campoFoto(null, 'comprovante', 'Foto do comprovante (opcional)');
+    const blocoPix = el('div', { class: 'bloco-pix', hidden: true });
+    const blocoCartao = el('div', { class: 'bloco-cartao', hidden: true });
     const botoesForma = Object.entries(ROTULO_FORMA).map(([chave, rotulo]) => {
       const b = el('button', { type: 'button', class: 'opcao forma-opcao', role: 'radio', 'aria-checked': 'false', 'data-valor': chave }, rotulo);
       b.addEventListener('click', () => {
@@ -2635,6 +2655,8 @@ function dialogoPagamento({ restante, pet }) {
         for (const x of botoesForma) x.setAttribute('aria-checked', String(x === b));
         blocoDinheiro.hidden = forma !== 'dinheiro';
         atualizarTroco();
+        atualizarPix();
+        atualizarCartao();
       });
       return b;
     });
@@ -2646,6 +2668,84 @@ function dialogoPagamento({ restante, pet }) {
       const t = trocoDe(valor, recebido);
       if (t === null) { troco.textContent = `Faltam ${formatarReais(valor - recebido)} do cliente`; troco.classList.add('falta'); } else troco.textContent = `Troco: ${formatarReais(t)}`;
     }
+    // ---- Pix: QR Code com o valor deste pagamento ----
+    let tempoPix = null;
+    let codigoPix = '';
+    // O SVG é gerado por nós (só números de desenho, nada digitado por alguém); por isso é seguro
+    // transformá-lo em elemento com DOMParser. Texto de usuário nunca entra aqui.
+    function svgDoQr(texto) {
+      const doc = new DOMParser().parseFromString(qrParaSvg(texto, { tamanhoPx: 260 }), 'image/svg+xml');
+      const svg = document.importNode(doc.documentElement, true);
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-label', 'QR Code do Pix');
+      svg.classList.add('pix-qr');
+      return svg;
+    }
+    async function copiarCodigo(aviso) {
+      try {
+        if (!navigator.clipboard || !window.isSecureContext) throw new Error('sem área de transferência');
+        await navigator.clipboard.writeText(codigoPix);
+      } catch {
+        // Plano B para telas sem permissão: seleciona um campo escondido e copia.
+        const t = el('textarea', { class: 'copia-escondida', 'aria-hidden': 'true', readonly: true });
+        t.value = codigoPix;
+        d.append(t);
+        t.select();
+        let deu = false;
+        try { deu = document.execCommand('copy'); } catch { deu = false; }
+        t.remove();
+        if (!deu) { aviso.textContent = 'Não consegui copiar. Use o QR Code.'; return; }
+      }
+      aviso.textContent = 'Código copiado!';
+    }
+    function desenharPix() {
+      const valor = lerReais(valorEntrada.value);
+      const partes = [];
+      codigoPix = '';
+      if (valor === null || valor <= 0 || valor > restante) {
+        partes.push(el('h3', { class: 'pix-titulo' }, 'Pix'), el('p', { class: 'suave' }, 'Digite o valor deste pagamento para mostrar o QR Code.'));
+      } else {
+        try {
+          codigoPix = payloadPix({ chave: pix.pix_chave, nome: pix.pix_nome, cidade: pix.pix_cidade, valorCentavos: valor, txid: txidDoPedido(pedidoId, sequencia) });
+          const aviso = el('span', { class: 'pix-copiado', role: 'status' });
+          partes.push(
+            el('h3', { class: 'pix-titulo' }, `Pix — ${formatarReais(valor)}`),
+            el('div', { class: 'pix-qr-caixa' }, svgDoQr(codigoPix)),
+            el('p', { class: 'pix-recebedor' }, el('strong', {}, pix.pix_nome), el('span', { class: 'suave' }, `Chave ${mascararChave(pix.pix_chave)}`)),
+            el('button', { type: 'button', class: 'secundario bloco-botao', id: 'pix-copiar', onclick: () => copiarCodigo(aviso) }, 'Copiar código Pix (copia e cola)'),
+            aviso,
+            el('p', { class: 'suave pix-dica' }, 'Confira no app do banco que o Pix caiu e toque em Recebi o Pix'));
+        } catch (e) { partes.push(caixaMensagem('erro', `Não foi possível gerar o QR Code: ${e.message}`)); }
+      }
+      blocoPix.replaceChildren(el('div', { class: 'cartao-pix' }, partes));
+    }
+    function atualizarPix() {
+      blocoPix.hidden = forma !== 'pix';
+      ok.textContent = forma === 'pix' ? 'Recebi o Pix' : 'Confirmar recebimento';
+      if (forma !== 'pix') return;
+      if (!pix || !pix.pix_chave) {
+        blocoPix.replaceChildren(el('p', { class: 'suave pix-sem-chave' }, 'Cadastre a chave Pix em Dados da clínica para mostrar o QR Code. ',
+          usuario && usuario.admin ? el('a', { href: '#/usuarios', id: 'pix-configurar', onclick: () => fechar(null) }, 'Abrir Dados da clínica') : null));
+        return;
+      }
+      desenharPix();
+    }
+    // ---- Cartão: a maquininha fica na recepção ----
+    function atualizarCartao() {
+      const mostrar = forma === 'cartao' && podeEnviarRecepcao && !cartaoAqui;
+      blocoCartao.hidden = !mostrar;
+      ok.hidden = mostrar;
+      foto.caixa.hidden = mostrar; // a foto só faz sentido ao registrar aqui
+    }
+    blocoCartao.append(
+      el('p', { class: 'aviso-cartao' }, el('strong', {}, 'Cartão é na maquininha da recepção')),
+      el('button', { type: 'button', class: 'grande', id: 'pag-enviar-recepcao', onclick: () => fechar({ enviarRecepcao: true }) }, 'Enviar para a recepção (maquininha)'),
+      el('button', { type: 'button', class: 'secundario bloco-botao', id: 'pag-cartao-aqui', onclick: () => { cartaoAqui = true; atualizarCartao(); } }, 'Já passei o cartão aqui — registrar'));
+    valorEntrada.addEventListener('input', () => {
+      if (forma !== 'pix' || !pix || !pix.pix_chave) return;
+      clearTimeout(tempoPix);
+      tempoPix = setTimeout(desenharPix, 300); // espera a pessoa parar de digitar
+    });
     valorEntrada.addEventListener('input', atualizarTroco);
     recebidoEntrada.addEventListener('input', atualizarTroco);
     const ok = el('button', { type: 'button', id: 'pag-confirmar' }, 'Confirmar recebimento');
@@ -2655,7 +2755,7 @@ function dialogoPagamento({ restante, pet }) {
       el('label', {}, 'Forma de pagamento'),
       el('div', { class: 'grupo-opcoes', role: 'radiogroup', 'aria-label': 'Forma de pagamento' }, botoesForma),
       el('label', { for: 'pag-valor' }, 'Valor deste pagamento (R$)'), valorEntrada,
-      blocoDinheiro, foto.caixa, area,
+      blocoPix, blocoDinheiro, blocoCartao, foto.caixa, area,
       el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'pag-voltar' }, 'Voltar')));
     const fechar = (v) => { d.close(); d.remove(); resolve(v); };
     ok.addEventListener('click', async () => {
@@ -2757,6 +2857,10 @@ async function telaConta(atendimentoId, consulta = '') {
   let d;
   let itens = [];
   let trocoAviso = null; // "Troco: R$ 50,00" logo depois de receber em dinheiro
+  let passoComprovante = null; // id do pagamento recém-registrado: mostra o passo "Tirar foto do comprovante"
+  const fotosEmMemoria = new Map(); // id do pagamento -> foto já reduzida (para compartilhar sem baixar de novo)
+  let painelEnvio = null; // { texto, arquivos: [{ url, nome }], aviso } quando o aparelho não compartilha foto
+  let configClinica; // dados da clínica (Pix e WhatsApp do financeiro), lidos uma vez
   const erro = el('div');
   const corpo = el('div', { class: 'conta-corpo' });
   const copia = (lista) => lista.map((i) => ({ ...i }));
@@ -2783,13 +2887,141 @@ async function telaConta(atendimentoId, consulta = '') {
   async function receber() {
     await agir(async () => {
       const id = await garantirSalva();
-      const pagamento = await dialogoPagamento({ restante: d.pedido.restante_centavos, pet: d.atendimento.pet.nome });
+      // Dados do Pix da clínica (se falhar, o pagamento segue sem QR Code).
+      const pix = await clinica();
+      const pagamento = await dialogoPagamento({
+        restante: d.pedido.restante_centavos, pet: d.atendimento.pet.nome, pix,
+        pedidoId: id, sequencia: d.pedido.pagamentos.length + 1, podeEnviarRecepcao: d.pedido.status === 'aberto',
+      });
       if (!pagamento) return;
+      if (pagamento.enviarRecepcao) {
+        await api('POST', `/api/pedidos/${id}/enviar-recepcao`);
+        irPara('#/hoje');
+        return;
+      }
       const r = await api('POST', `/api/pedidos/${id}/pagamentos`, pagamento);
       trocoAviso = r.troco_centavos > 0 ? `Troco: ${formatarReais(r.troco_centavos)}` : null;
+      passoComprovante = r.pagamento ? r.pagamento.id : null;
+      painelEnvio = null;
       aplicar(r);
       desenhar();
     });
+  }
+
+  async function clinica() {
+    if (configClinica === undefined) configClinica = await api('GET', '/api/configuracoes/clinica').catch(() => null);
+    return configClinica;
+  }
+
+  // ---- Comprovante: foto do pagamento e envio ao financeiro ----
+  const pagamentosValidos = () => d.pedido.pagamentos.filter((g) => !g.estornado);
+
+  // Abre a câmera (ou a galeria), reduz a foto, envia e anexa ao pagamento.
+  function escolherComprovante(g, { camera }) {
+    const entrada = el('input', { type: 'file', accept: 'image/*', class: 'escondido', 'aria-hidden': 'true', tabindex: '-1' });
+    if (camera) entrada.setAttribute('capture', 'environment');
+    entrada.addEventListener('change', () => {
+      const arquivo = entrada.files && entrada.files[0];
+      entrada.remove();
+      if (!arquivo) return;
+      agir(async () => {
+        const blob = await reduzirFoto(arquivo);
+        const foto = await enviarFotoArquivo(blob);
+        const r = await api('PATCH', `/api/pagamentos/${g.id}/comprovante`, { foto_id: foto.id });
+        fotosEmMemoria.set(g.id, blob);
+        aplicar(r);
+        desenhar();
+      });
+    });
+    document.body.append(entrada);
+    entrada.click();
+  }
+
+  // A foto de um pagamento como arquivo JPEG. Se a página foi recarregada, busca de volta no servidor.
+  async function arquivoDoComprovante(g) {
+    let blob = fotosEmMemoria.get(g.id);
+    if (!blob) {
+      const resposta = await fetch(`/api/fotos/${g.comprovante_foto_id}`, { credentials: 'same-origin' });
+      if (!resposta.ok) throw new Error('Não foi possível buscar a foto do comprovante.');
+      blob = await resposta.blob();
+      fotosEmMemoria.set(g.id, blob);
+    }
+    return new File([blob], nomeArquivoComprovante(d.atendimento.pet.nome, g.recebido_em), { type: 'image/jpeg' });
+  }
+
+  // Compartilha a foto + a mensagem pelo menu de compartilhar do celular (Web Share API):
+  // a pessoa escolhe o WhatsApp e o grupo do financeiro e toca em enviar.
+  // (Os links "wa.me" só levam texto: não carregam foto e não abrem grupo. Por isso só são o plano B.)
+  async function enviarAoFinanceiro() {
+    const texto = montarMensagemFinanceiro({ pedido: d.pedido, atendimento: d.atendimento, pet: d.atendimento.pet, tutor: d.atendimento.tutor });
+    const arquivos = [];
+    for (const g of pagamentosValidos()) if (g.comprovante_foto_id) arquivos.push(await arquivoDoComprovante(g));
+    if (navigator.share && (!arquivos.length || (navigator.canShare && navigator.canShare({ files: arquivos })))) {
+      try {
+        await navigator.share(arquivos.length ? { files: arquivos, text: texto } : { text: texto });
+        painelEnvio = null;
+        desenhar();
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // a pessoa fechou o menu de compartilhar
+      }
+    }
+    // Plano B: abre o WhatsApp só com o texto; a pessoa anexa a foto baixada.
+    const cfg = await clinica();
+    for (const antigo of (painelEnvio ? painelEnvio.arquivos : [])) URL.revokeObjectURL(antigo.url);
+    painelEnvio = { texto, arquivos: arquivos.map((f) => ({ url: URL.createObjectURL(f), nome: f.name })), aviso: '' };
+    window.open(linkWhatsappFinanceiro(cfg && cfg.financeiro_whatsapp, texto), '_blank', 'noopener');
+    desenhar();
+  }
+
+  async function copiarMensagem(texto, aviso) {
+    try {
+      if (!navigator.clipboard || !window.isSecureContext) throw new Error('sem área de transferência');
+      await navigator.clipboard.writeText(texto);
+      aviso.textContent = 'Mensagem copiada!';
+    } catch {
+      const t = el('textarea', { class: 'copia-escondida', 'aria-hidden': 'true', readonly: true });
+      t.value = texto;
+      document.body.append(t);
+      t.select();
+      let deu = false;
+      try { deu = document.execCommand('copy'); } catch { deu = false; }
+      t.remove();
+      aviso.textContent = deu ? 'Mensagem copiada!' : 'Não consegui copiar. Selecione e copie o texto abaixo.';
+    }
+  }
+
+  function botaoEnviarFinanceiro(grande) {
+    return el('button', { type: 'button', class: grande ? 'grande' : 'secundario bloco-botao', id: 'enviar-financeiro', onclick: () => agir(enviarAoFinanceiro) }, 'Enviar ao financeiro (WhatsApp)');
+  }
+
+  // Plano B quando o aparelho não consegue compartilhar a foto.
+  function blocoPlanoB() {
+    if (!painelEnvio) return null;
+    const aviso = el('span', { class: 'pix-copiado', role: 'status' });
+    return el('div', { class: 'plano-b', id: 'plano-b' },
+      el('p', {}, el('strong', {}, 'Este aparelho não consegue compartilhar a foto.'), ' Abrimos o WhatsApp com a mensagem. Anexe a foto do comprovante você mesmo.'),
+      ...painelEnvio.arquivos.map((a) => el('a', { class: 'botao-link', href: a.url, download: a.nome }, 'Baixar foto do comprovante')),
+      el('button', { type: 'button', class: 'secundario bloco-botao', id: 'copiar-mensagem', onclick: () => copiarMensagem(painelEnvio.texto, aviso) }, 'Copiar mensagem'),
+      aviso);
+  }
+
+  // Passo logo depois de receber: foto do comprovante e envio ao financeiro.
+  function cartaoPassoComprovante() {
+    const g = d.pedido.pagamentos.find((x) => x.id === passoComprovante && !x.estornado);
+    if (!g) return null;
+    return el('div', { class: 'cartao passo-comprovante', id: 'passo-comprovante' },
+      el('h2', {}, `${ROTULO_FORMA[g.forma] || g.forma} registrado: ${formatarReais(g.valor_centavos)}`),
+      g.comprovante_foto_id
+        ? el('div', { class: 'comprovante-pronto' },
+          el('img', { class: 'comprovante-mini', src: `/api/fotos/${g.comprovante_foto_id}`, alt: 'Foto do comprovante' }),
+          el('strong', {}, 'Comprovante ✓'))
+        : el('div', { class: 'comprovante-botoes' },
+          el('button', { type: 'button', class: 'grande', id: 'comprovante-tirar', onclick: () => escolherComprovante(g, { camera: true }) }, icone('camera', 24), 'Tirar foto do comprovante'),
+          el('button', { type: 'button', class: 'secundario bloco-botao', id: 'comprovante-galeria', onclick: () => escolherComprovante(g, { camera: false }) }, 'Escolher da galeria')),
+      botaoEnviarFinanceiro(true),
+      blocoPlanoB(),
+      el('button', { type: 'button', class: 'secundario bloco-botao', id: 'comprovante-concluir', onclick: () => { passoComprovante = null; desenhar(); } }, 'Concluir'));
   }
 
   function linhaItem(i, editavel) {
@@ -2822,13 +3054,17 @@ async function telaConta(atendimentoId, consulta = '') {
 
   function listaPagamentos(p) {
     if (!p.pagamentos.length) return null;
+    const temValido = p.pagamentos.some((g) => !g.estornado);
     return el('div', { class: 'cartao conta-pagamentos' }, el('h2', {}, 'Pagamentos'),
       el('ul', { class: 'lista-simples' }, p.pagamentos.map((g) => el('li', { class: 'pagamento-linha' + (g.estornado ? ' estornado' : '') },
         el('div', { class: 'pagamento-info' },
           el('strong', {}, `${ROTULO_FORMA[g.forma] || g.forma} · ${formatarReais(g.valor_centavos)}`, g.estornado ? el('span', { class: 'etiqueta st-cancelada' }, 'Desfeito') : null),
           el('span', { class: 'detalhe' }, `Recebido por ${g.recebido_por.nome} em ${formatarDataHora(g.recebido_em)}`),
           g.forma === 'dinheiro' && g.recebido_dinheiro_centavos != null ? el('span', { class: 'detalhe' }, `Cliente deu ${formatarReais(g.recebido_dinheiro_centavos)} · troco ${formatarReais(g.troco_centavos)}`) : null,
-          g.comprovante_foto_id ? el('a', { class: 'detalhe', href: `/api/fotos/${g.comprovante_foto_id}`, target: '_blank', rel: 'noopener' }, 'Ver foto do comprovante') : null,
+          g.comprovante_foto_id
+            ? el('a', { class: 'comprovante-link', href: `/api/fotos/${g.comprovante_foto_id}`, target: '_blank', rel: 'noopener' },
+              el('img', { class: 'comprovante-mini', src: `/api/fotos/${g.comprovante_foto_id}`, alt: '' }), el('strong', {}, 'Comprovante ✓'))
+            : (!g.estornado && passoComprovante !== g.id ? el('button', { type: 'button', class: 'secundario comprovante-adicionar', onclick: () => escolherComprovante(g, { camera: true }) }, 'Adicionar comprovante') : null),
           g.estornado ? el('span', { class: 'detalhe estorno-motivo' }, `Desfeito por ${g.estornado_por ? g.estornado_por.nome : '—'}: ${g.estorno_motivo || ''}`) : null),
         !g.estornado && usuario.admin
           ? el('button', { type: 'button', class: 'perigo desfazer-pagamento', onclick: () => dialogoCampo({
@@ -2841,7 +3077,9 @@ async function telaConta(atendimentoId, consulta = '') {
               desenhar();
             },
           }) }, 'Desfazer')
-          : null))));
+          : null))),
+      temValido && passoComprovante === null ? botaoEnviarFinanceiro(false) : null,
+      passoComprovante === null ? blocoPlanoB() : null);
   }
 
   function desenhar() {
@@ -2907,7 +3145,7 @@ async function telaConta(atendimentoId, consulta = '') {
     }
 
     corpo.replaceChildren(...[
-      cartaoPaciente, sucesso,
+      cartaoPaciente, sucesso, cartaoPassoComprovante(),
       el('div', { class: 'cartao' },
         el('h2', {}, 'Itens da conta'),
         itens.length ? el('ul', { class: 'conta-itens' }, itens.map((i) => linhaItem(i, editavel))) : el('p', { class: 'suave' }, 'Nenhum item ainda. Toque em "Adicionar item".'),

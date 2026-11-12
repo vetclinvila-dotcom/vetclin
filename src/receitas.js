@@ -3,8 +3,10 @@
 // Depois de liberada a receita NÃO muda mais: para corrigir, cria-se uma nova versão.
 import { exigirAdmin, exigirLogin, exigirPapel } from './auth.js';
 import { ErroHttp, agoraISO, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
-import { likeSeguro, normalizarBusca } from './cadastro.js';
+import { likeSeguro, normalizarBusca, normalizarWhatsapp } from './cadastro.js';
 import { notificar } from './notificacoes.js';
+// Regras do Pix (chave, nome, cidade) ficam em public/pix.js: o app e o servidor usam o mesmo código.
+import { MAX_CIDADE_PIX, MAX_NOME_PIX, normalizarTextoPix, validarChavePix } from '../public/pix.js';
 
 const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem escreve, pede e cancela
 const MAX_TEXTO = 10000;
@@ -20,6 +22,7 @@ const CAMPOS_LINHA = ['remedio', 'dose', 'como', 'intervalo', 'duracao'];
 const MAX_DESCRICAO_ITEM = 300;
 const MAX_QUANTIDADE = 999;
 const MAX_VALOR_CENTAVOS = 10_000_000; // R$ 100.000,00 por unidade
+const CHAVES_PIX = ['pix_chave', 'pix_nome', 'pix_cidade', 'financeiro_whatsapp'];
 const CHAVES_CLINICA = ['clinica_nome', 'clinica_endereco', 'clinica_telefone', 'clinica_cidade'];
 
 // ---------- apoio ----------
@@ -137,13 +140,19 @@ function exigirVisivel(usuario, r) {
 }
 
 async function configuracaoClinica(env) {
-  const { results } = await env.DB.prepare(`SELECT chave, valor FROM configuracoes WHERE chave LIKE 'clinica_%' OR chave = 'consulta_hora_corte'`).all();
+  const { results } = await env.DB.prepare(`SELECT chave, valor FROM configuracoes WHERE chave LIKE 'clinica_%' OR chave LIKE 'pix_%' OR chave = 'financeiro_whatsapp' OR chave = 'consulta_hora_corte'`).all();
   const m = Object.fromEntries(results.map((x) => [x.chave, x.valor]));
   return {
     clinica_nome: m.clinica_nome || 'Vetclin',
     clinica_endereco: m.clinica_endereco || '',
     clinica_telefone: m.clinica_telefone || '',
     clinica_cidade: m.clinica_cidade || '',
+    // Pix (QR Code): chave só com números/letras padronizados; nome e cidade já no formato do Pix. Vazio = QR desligado.
+    pix_chave: m.pix_chave || '',
+    pix_nome: m.pix_nome || '',
+    pix_cidade: m.pix_cidade || '',
+    // WhatsApp do financeiro (opcional, formato +5571999998888): usado quando o aparelho não consegue compartilhar a foto do comprovante.
+    financeiro_whatsapp: m.financeiro_whatsapp || '',
     // Horário a partir do qual a consulta passa a ter o valor "após o corte" (só administradores mudam).
     consulta_hora_corte: m.consulta_hora_corte || '18:00',
   };
@@ -614,8 +623,26 @@ async function clinicaAlterar(request, env) {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) throw new ErroHttp(400, 'Horário inválido. Use o formato 18:00.');
     novo.consulta_hora_corte = h;
   }
+  // Pix: a chave é conferida (dígitos verificadores) e padronizada; nome e cidade são normalizados ao salvar.
+  if (c.pix_chave !== undefined) {
+    const bruta = String(c.pix_chave ?? '').trim();
+    if (!bruta) novo.pix_chave = '';
+    else {
+      try { novo.pix_chave = validarChavePix(bruta).chave; } catch (e) { throw new ErroHttp(400, e.message); }
+    }
+  }
+  if (c.pix_nome !== undefined) novo.pix_nome = normalizarTextoPix(c.pix_nome, MAX_NOME_PIX);
+  if (c.pix_cidade !== undefined) novo.pix_cidade = normalizarTextoPix(c.pix_cidade, MAX_CIDADE_PIX);
+  if (c.financeiro_whatsapp !== undefined) {
+    const bruto = String(c.financeiro_whatsapp ?? '').trim();
+    novo.financeiro_whatsapp = bruto ? normalizarWhatsapp(bruto).e164 : '';
+  }
+  if (novo.pix_chave) {
+    if (!novo.pix_nome) throw new ErroHttp(400, 'Preencha o nome do recebedor do Pix (como está no banco).');
+    if (!novo.pix_cidade) throw new ErroHttp(400, 'Preencha a cidade do Pix.');
+  }
   const agora = agoraISO();
-  const comandos = [...CHAVES_CLINICA, 'consulta_hora_corte'].filter((k) => novo[k] !== antes[k]).map((k) => env.DB.prepare(
+  const comandos = [...CHAVES_CLINICA, ...CHAVES_PIX, 'consulta_hora_corte'].filter((k) => novo[k] !== antes[k]).map((k) => env.DB.prepare(
     `INSERT INTO configuracoes (chave, valor, atualizado_em, atualizado_por) VALUES (?, ?, ?, ?)
      ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, atualizado_em = excluded.atualizado_em, atualizado_por = excluded.atualizado_por`
   ).bind(k, novo[k], agora, adm.id));

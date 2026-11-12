@@ -592,3 +592,44 @@ test('horário de corte da consulta: só administrador muda, formato validado, e
   assert.equal(ok.dados.consulta_hora_corte, '17:00');
   assert.equal(a.env.DB.bruto.prepare(`SELECT valor FROM configuracoes WHERE chave = 'consulta_hora_corte'`).get().valor, '17:00');
 });
+
+test('comprovante depois do pagamento: qualquer um da equipe anexa, fica registrado e a resposta traz o peso', async () => {
+  const a = await ambiente();
+  const { at, id } = await contaDe(a, 1000);
+  const r = await pagar(a, id, { forma: 'pix', valor_centavos: 1000 });
+  const pagId = r.dados.pagamento.id;
+  assert.equal(r.dados.pagamento.comprovante_foto_id, null);
+  assert.equal(r.dados.atendimento.peso_kg, 5);
+  const jpeg = new Uint8Array(100); jpeg.set([0xff, 0xd8, 0xff, 0xe0]);
+  const foto = (await chamar(a.env, 'POST', '/api/fotos', { cookie: a.recepcao, bytes: jpeg, tipo: 'image/jpeg' })).dados.id;
+  const anexar = (corpo, cookie = a.recepcao, pid = pagId) => chamar(a.env, 'PATCH', `/api/pagamentos/${pid}/comprovante`, { cookie, corpo });
+  assert.equal((await anexar({ foto_id: foto }, 'x=y')).status, 401);
+  assert.equal((await anexar({})).status, 400);
+  assert.equal((await anexar({ foto_id: 'abc' })).status, 400);
+  assert.equal((await anexar({ foto_id: 9999 })).status, 400);
+  assert.equal((await anexar({ foto_id: foto }, a.recepcao, 9999)).status, 404);
+  const ok = await anexar({ foto_id: foto }, a.recepcao);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.dados.pagamento.comprovante_foto_id, foto);
+  assert.equal((await verPedido(a, at)).dados.pedido.pagamentos[0].comprovante_foto_id, foto);
+  const log = (await acoes(a, 'anexar_comprovante'));
+  assert.equal(log.length, 1);
+  assert.ok(!/senha|hash/i.test(log[0].depois ?? ''));
+  // conta paga continua aceitando comprovante; pagamento desfeito não
+  const est = await chamar(a.env, 'POST', `/api/pagamentos/${pagId}/estornar`, { cookie: a.vet, corpo: { motivo: 'teste' } });
+  assert.equal(est.status, 200);
+  assert.equal((await anexar({ foto_id: foto })).status, 409);
+});
+
+test('WhatsApp do financeiro: só admin altera, é normalizado e pode ser apagado', async () => {
+  const a = await ambiente();
+  const PATCH = (corpo, cookie = a.vet) => chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie, corpo });
+  assert.equal((await PATCH({ financeiro_whatsapp: '(71) 99999-8888' }, a.recepcao)).status, 403);
+  const ok = await PATCH({ financeiro_whatsapp: '(71) 99999-8888' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.dados.financeiro_whatsapp, '+5571999998888');
+  assert.equal((await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.recepcao })).dados.financeiro_whatsapp, '+5571999998888');
+  assert.equal((await PATCH({ financeiro_whatsapp: '123' })).status, 400);
+  assert.equal((await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.vet })).dados.financeiro_whatsapp, '+5571999998888');
+  assert.equal((await PATCH({ financeiro_whatsapp: '' })).dados.financeiro_whatsapp, '');
+});

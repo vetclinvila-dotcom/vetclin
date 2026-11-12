@@ -617,3 +617,32 @@ details.item-livre button { width: 100%; margin-top: 12px; }
 .caixa-forma strong { font-size: 1.125rem; color: var(--texto); overflow-wrap: anywhere; }
 .caixa-forma-nome { font-weight: 800; color: var(--acao-escura); }
 .caixa-forma .suave { font-size: 0.8125rem; }
+
+/* ---------- Pix (QR Code) e cartão na janela de pagamento ---------- */
+.sub-secao { margin: 22px 0 4px; font-size: 1rem; font-weight: 800; }
+.dica-campo { margin: 6px 0 0; font-size: 0.875rem; }
+.cartao-pix { border: 1.5px solid var(--turquesa-borda); background: var(--turquesa-fundo); border-radius: var(--raio-cartao); padding: 14px; margin: 14px 0 4px; text-align: center; }
+.pix-titulo { margin: 0 0 10px; font-size: 1.25rem; font-weight: 800; color: var(--petroleo); }
+.pix-qr-caixa { background: #fff; border-radius: var(--raio-campo); padding: 8px; display: flex; justify-content: center; border: 1px solid var(--divisor); }
+svg.pix-qr { display: block; width: 260px; max-width: 100%; height: auto; aspect-ratio: 1; background: #fff; }
+.pix-recebedor { margin: 10px 0; display: flex; flex-direction: column; gap: 2px; }
+.pix-copiado { display: block; min-height: 1.4em; margin-top: 6px; font-weight: 700; color: var(--acao-escura); }
+.pix-dica { margin: 4px 0 0; font-size: 0.9375rem; }
+.pix-sem-chave { margin: 10px 0 0; }
+.bloco-cartao { margin: 14px 0 0; padding: 14px; border: 1.5px solid var(--laranja-borda); background: var(--laranja-fundo); border-radius: var(--raio-cartao); display: grid; gap: 10px; }
+.aviso-cartao { margin: 0; color: var(--laranja-texto); text-align: center; font-size: 1.0625rem; }
+textarea.copia-escondida { position: fixed; left: -9999px; top: 0; opacity: 0; }
+
+/* ---------- Comprovante e envio ao financeiro ---------- */
+.passo-comprovante { border: 1.5px solid var(--turquesa-borda); background: var(--turquesa-fundo); display: grid; gap: 12px; }
+.passo-comprovante h2 { margin: 0; }
+.passo-comprovante button.grande { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.comprovante-botoes { display: grid; gap: 10px; }
+.comprovante-pronto { display: flex; align-items: center; gap: 12px; color: var(--acao-escura); }
+img.comprovante-mini { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 1px solid var(--divisor); background: #fff; flex: none; }
+.comprovante-link { display: inline-flex; align-items: center; gap: 10px; margin-top: 6px; color: var(--acao-escura); text-decoration: none; }
+.comprovante-adicionar { margin-top: 6px; min-height: 44px; }
+.plano-b { display: grid; gap: 10px; padding: 12px; background: #fff; border: 1px solid var(--laranja-borda); border-radius: var(--raio-botao); }
+.plano-b p { margin: 0; }
+a.botao-link { display: block; text-align: center; padding: 12px; min-height: 44px; border: 1.5px solid var(--borda-campo); border-radius: var(--raio-botao); background: #fff; color: var(--petroleo); font-weight: 800; text-decoration: none; }
+.conta-pagamentos > button#enviar-financeiro { margin-top: 12px; }

@@ -100,7 +100,7 @@ export async function produtosDaReceita(env, atendimentoId) {
 // ---------- leitura ----------
 async function atendimentoComPet(env, id) {
   const a = await env.DB.prepare(
-    `SELECT a.id, a.status, a.chegada_em, a.iniciado_em, a.finalizado_em, p.id AS pet_id, p.nome AS pet_nome, p.especie, p.foto_id AS pet_foto_id,
+    `SELECT a.id, a.status, a.peso_kg, a.chegada_em, a.iniciado_em, a.finalizado_em, p.id AS pet_id, p.nome AS pet_nome, p.especie, p.foto_id AS pet_foto_id,
             t.id AS tutor_id, t.nome AS tutor_nome, v.nome AS vet_nome
        FROM atendimentos a JOIN pets p ON p.id = a.pet_id JOIN tutores t ON t.id = p.tutor_id LEFT JOIN usuarios v ON v.id = a.veterinario_id
       WHERE a.id = ?`
@@ -146,7 +146,7 @@ export async function respostaPedido(env, atendimentoId) {
   const receita = await produtosDaReceita(env, atendimentoId);
   const automaticos = { consulta, receita: receita.itens, sem_valor: receita.sem_valor };
   const atendimento = {
-    id: a.id, status: a.status, chegada_em: a.chegada_em, iniciado_em: a.iniciado_em ?? null, finalizado_em: a.finalizado_em ?? null,
+    id: a.id, status: a.status, peso_kg: a.peso_kg ?? null, chegada_em: a.chegada_em, iniciado_em: a.iniciado_em ?? null, finalizado_em: a.finalizado_em ?? null,
     veterinario_nome: a.vet_nome ?? null,
     pet: { id: a.pet_id, nome: a.pet_nome, especie: a.especie, foto_id: a.pet_foto_id ?? null },
     tutor: { id: a.tutor_id, nome: a.tutor_nome },
@@ -386,6 +386,26 @@ async function pagamentoRegistrar(request, env, id) {
   return json({ ...resp, pagamento, troco_centavos: pagamento.troco_centavos }, 201);
 }
 
+// Anexa (ou troca) a foto do comprovante de um pagamento, na hora ou depois. Qualquer pessoa da equipe pode.
+async function pagamentoComprovante(request, env, id) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const fotoId = Number(c.foto_id);
+  if (!Number.isInteger(fotoId) || fotoId < 1) throw new ErroHttp(400, 'Foto inválida.');
+  if (!(await env.DB.prepare('SELECT id FROM fotos WHERE id = ?').bind(fotoId).first())) throw new ErroHttp(400, 'Foto não encontrada. Envie a foto de novo.');
+  const g = await env.DB.prepare('SELECT * FROM pagamentos WHERE id = ?').bind(id).first();
+  if (!g) throw new ErroHttp(404, 'Pagamento não encontrado.');
+  if (g.estornado === 1) throw new ErroHttp(409, 'Este pagamento foi desfeito.');
+  await env.DB.prepare('UPDATE pagamentos SET comprovante_foto_id = ? WHERE id = ?').bind(fotoId, id).run();
+  await registrarAcao(env, {
+    usuarioId: u.id, acao: 'anexar_comprovante', entidade: 'pagamentos', entidadeId: id,
+    antes: { comprovante_foto_id: g.comprovante_foto_id ?? null }, depois: { comprovante_foto_id: fotoId }, ip: ipDe(request),
+  });
+  const ped = await pedidoPorId(env, g.pedido_id);
+  const resp = await respostaPedido(env, ped.atendimento_id);
+  return json({ ...resp, pagamento: resp.pedido.pagamentos.find((x) => x.id === id) });
+}
+
 // Desfaz um pagamento (estorno). SÓ administradores, com motivo.
 async function pagamentoEstornar(request, env, id) {
   const adm = await exigirAdmin(request, env);
@@ -460,5 +480,6 @@ export const ROTAS_PEDIDOS = [
   ['POST', '/api/pedidos/:id/pagamentos', pagamentoRegistrar],
   ['POST', '/api/pedidos/:id/cancelar', pedidoCancelar],
   ['POST', '/api/pagamentos/:id/estornar', pagamentoEstornar],
+  ['PATCH', '/api/pagamentos/:id/comprovante', pagamentoComprovante],
   ['GET', '/api/caixa/hoje', caixaHoje],
 ];
