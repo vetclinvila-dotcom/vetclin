@@ -317,6 +317,36 @@ function escolhaEspecie(inicial = '') {
   return { caixa, valor: () => atual };
 }
 
+// Três botões grandes (Macho / Fêmea / Não sei). "Não sei" = sem sexo informado. Devolve { caixa, valor() }.
+function escolhaSexo(inicial = '') {
+  let atual = inicial || '';
+  const opcoes = [['macho', 'Macho'], ['femea', 'Fêmea'], ['', 'Não sei']];
+  const botoes = opcoes.map(([chave, rotulo]) => {
+    const b = el('button', { type: 'button', class: 'opcao', role: 'radio', 'aria-checked': String(chave === atual), 'data-valor': chave || 'nao-sei' }, rotulo);
+    b.addEventListener('click', () => { atual = chave; for (const x of botoes) x.setAttribute('aria-checked', String(x === b)); });
+    return b;
+  });
+  return { caixa: el('div', { class: 'grupo-opcoes', role: 'radiogroup', 'aria-label': 'Sexo' }, botoes), valor: () => atual };
+}
+
+// Bloco "Mais detalhes do pet (opcional)": fechado até tocar. Mesmos campos e regras da edição do pet
+// (o servidor confere as faixas: idade de 0 a 40 anos, meses de 0 a 11). Devolve { caixa, valores() }.
+function blocoDetalhesPet() {
+  const sexo = escolhaSexo('');
+  const raca = el('input', { id: 'det-raca', name: 'det-raca', maxlength: 80, autocomplete: 'off' });
+  const anos = el('input', { id: 'det-idade_anos', name: 'det-idade_anos', type: 'number', inputmode: 'numeric', min: 0, max: 40, placeholder: 'anos', 'aria-label': 'Idade em anos' });
+  const meses = el('input', { id: 'det-idade_meses', name: 'det-idade_meses', type: 'number', inputmode: 'numeric', min: 0, max: 11, placeholder: 'meses (0 a 11)', 'aria-label': 'Idade em meses, de 0 a 11' });
+  const obs = el('textarea', { id: 'det-observacoes', name: 'det-observacoes', rows: 3, maxlength: 1000 });
+  const caixa = el('details', { class: 'mais-detalhes', id: 'mais-detalhes' },
+    el('summary', {}, 'Mais detalhes do pet (opcional)'),
+    el('label', {}, 'Sexo'), sexo.caixa,
+    el('label', { for: 'det-raca' }, 'Raça'), raca,
+    el('label', { for: 'det-idade_anos' }, 'Idade'),
+    el('div', { class: 'linha-idade' }, anos, meses),
+    el('label', { for: 'det-observacoes' }, 'Observações'), obs);
+  return { caixa, valores: () => ({ sexo: sexo.valor(), raca: raca.value, idade_anos: anos.value, idade_meses: meses.value, observacoes: obs.value }) };
+}
+
 function selectSexo(atual) {
   const s = el('select', { id: 'sexo', name: 'sexo' },
     el('option', { value: '' }, 'Não informado'),
@@ -338,6 +368,45 @@ function confirmar(titulo, texto, rotuloOk, rotuloNao = 'Cancelar') {
     const fechar = (v) => { d.close(); d.remove(); resolve(v); };
     d.querySelector('#confirmar-sim').addEventListener('click', () => fechar(true));
     d.querySelector('#confirmar-nao').addEventListener('click', () => fechar(false));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+// Janela "Com qual veterinário?": botões grandes, um por veterinário ativo.
+// Já vem marcado o veterinário da chegada ("Para quem?") ou o único veterinário ativo.
+// "aoConfirmar(vetId)" pode lançar erro: a mensagem aparece na janela e ela continua aberta.
+function dialogoVeterinario({ titulo, veterinarios, inicialId = null, aoConfirmar }) {
+  return new Promise((resolve) => {
+    let escolhido = veterinarios.some((v) => v.id === inicialId) ? inicialId : (veterinarios.length === 1 ? veterinarios[0].id : null);
+    const area = el('div');
+    const ok = el('button', { type: 'button', id: 'dialogo-ok' }, 'Confirmar');
+    const botoes = veterinarios.map((v) => {
+      const b = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'data-vet': String(v.id) }, v.nome);
+      b.addEventListener('click', () => { escolhido = v.id; marcar(); });
+      return { v, b };
+    });
+    const marcar = () => {
+      botoes.forEach(({ v, b }) => b.setAttribute('aria-checked', String(v.id === escolhido)));
+      ok.disabled = escolhido === null;
+    };
+    marcar();
+    const d = el('dialog', { class: 'confirmacao' },
+      el('h2', {}, titulo),
+      el('p', { class: 'pergunta-vet' }, 'Com qual veterinário?'),
+      veterinarios.length
+        ? el('div', { class: 'grupo-chips', role: 'radiogroup', 'aria-label': 'Veterinário' }, botoes.map(({ b }) => b))
+        : caixaMensagem('erro', 'Não há veterinário ativo cadastrado.'),
+      area,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'dialogo-voltar' }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    ok.addEventListener('click', async () => {
+      area.replaceChildren();
+      ok.disabled = true;
+      try { await aoConfirmar(escolhido); fechar(true); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    d.querySelector('#dialogo-voltar').addEventListener('click', () => fechar(false));
     d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
     document.body.append(d);
     d.showModal();
@@ -679,7 +748,7 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
   // A "pílula" do cartão: espera (laranja claro), com quem está (turquesa) ou finalizado (cinza).
   const pilula = {
     chegou: () => el('span', { class: 'pilula espera' }, `Chegou ${quando} · espera ${formatarEspera(esperaDe(a))}`),
-    em_atendimento: () => el('span', { class: 'pilula com-vet' }, `${vet ? 'Com ' + vet : 'Em atendimento'} desde ${formatarHora(a.iniciado_em)}`),
+    em_atendimento: () => el('span', { class: 'pilula com-vet' }, `${vet ? 'Com ' + vet : 'Em atendimento'} desde ${formatarHora(a.iniciado_em)}${a.iniciado_pela_recepcao ? ' (marcado pela recepção)' : ''}`),
     finalizado: () => el('span', { class: 'pilula pronto' }, `Chegou ${formatarHora(a.chegada_em)} · finalizado ${formatarHora(a.finalizado_em)}${vet ? ' · ' + vet : ''}`),
   }[a.status];
 
@@ -706,6 +775,23 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
     try { await funcao(); await aoAtualizar(); } catch (e) { botao.disabled = false; await aoAtualizar(); aoErro(e); }
   };
   const botoes = [];
+  if (a.status === 'chegou' && usuario.papel === 'recepcao') {
+    // Recepção marca que o paciente entrou no consultório e diz com qual veterinário.
+    const b = el('button', { type: 'button', class: 'iniciar entrou-consultorio' }, 'Entrou no consultório');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      try {
+        const vets = await veterinariosAtivos();
+        const feito = await dialogoVeterinario({
+          titulo: `${p.nome} entrou no consultório`, veterinarios: vets, inicialId: a.para_veterinario?.id ?? null,
+          aoConfirmar: (vetId) => api('POST', `/api/atendimentos/${a.id}/iniciar`, { veterinario_id: vetId }),
+        });
+        if (feito) { await aoAtualizar(); return; }
+        b.disabled = false;
+      } catch (e) { b.disabled = false; await aoAtualizar(); aoErro(e); }
+    });
+    botoes.push(b);
+  }
   if (a.status === 'chegou' && PODE_ATENDER.includes(usuario.papel)) {
     const b = el('button', { type: 'button', class: 'iniciar' }, 'Iniciar atendimento');
     b.addEventListener('click', rodar(b, () => api('POST', `/api/atendimentos/${a.id}/iniciar`)));
@@ -1024,11 +1110,12 @@ async function telaChegadaNova(petPre = null) {
   const area = el('div');
   const sugestoes = el('div', { id: 'sugestoes' });
   const botao = el('button', { type: 'submit', id: 'enviar-chegada', class: 'grande' }, 'Registrar chegada');
+  const detalhes = blocoDetalhesPet(); // só aparece para pet novo (some quando se escolhe "É este")
   const entradaPet = el('input', { id: 'pet_nome', name: 'pet_nome', autocomplete: 'off', required: true });
   const entradaTutor = el('input', { id: 'tutor_nome', name: 'tutor_nome', autocomplete: 'off', required: true });
   const entradaFone = el('input', { id: 'whatsapp', name: 'whatsapp', type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off' });
   const blocoNomes = el('div', {}, el('label', { for: 'pet_nome' }, 'Nome do pet'), entradaPet, el('label', { for: 'tutor_nome' }, 'Nome do tutor'), entradaTutor, sugestoes);
-  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor (opcional)'), entradaFone);
+  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor (opcional)'), entradaFone, detalhes.caixa);
   const cabecaEscolhido = el('div', { class: 'cartao cabeca-chegada', id: 'pet-escolhido' });
   const blocoPeso = el('div', { class: 'bloco-chegada' }, ...campos.peso);
 
@@ -1093,7 +1180,7 @@ async function telaChegadaNova(petPre = null) {
       } else {
         await api('POST', '/api/cadastro-rapido', {
           tutor: { nome: entradaTutor.value, whatsapp: entradaFone.value },
-          pet: { nome: entradaPet.value, especie: especie.valor() || undefined },
+          pet: { nome: entradaPet.value, especie: especie.valor() || undefined, ...detalhes.valores() },
           chegada, ...extra,
         });
       }

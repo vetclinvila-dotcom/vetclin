@@ -5,7 +5,8 @@ import { notificar } from './notificacoes.js';
 import { PRODUTOS_DO_ATENDIMENTO, listaAguardandoPagamento, resumosDePedidos } from './pedidos.js';
 import { ErroHttp, agoraISO, finalTelefone, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
 
-const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem pode iniciar e finalizar
+const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem pode finalizar
+const PAPEIS_INICIAR = ['veterinario', 'suporte', 'recepcao']; // quem pode marcar que o paciente entrou no consultório
 const ABERTOS = ['chegou', 'em_atendimento'];
 const MSG_PESO = 'Informe o peso ou escolha "Pesar depois".';
 const MSG_FAIXA_PESO = 'O peso deve estar entre 0,01 e 150 kg.';
@@ -171,6 +172,8 @@ function itemAtendimento(a, agoraMs) {
     cancelado_em: a.cancelado_em ?? null, motivo_cancelamento: a.motivo_cancelamento ?? null,
     para_veterinario: a.para_veterinario_id ? { id: a.para_veterinario_id, nome: a.para_vet_nome } : null,
     veterinario: a.veterinario_id ? { id: a.veterinario_id, nome: a.vet_nome } : null,
+    iniciado_por: a.iniciado_por ?? null, // quem apertou o botão (pode ser a recepção)
+    iniciado_pela_recepcao: !!a.iniciado_por && a.iniciado_por !== a.veterinario_id,
     pet: { id: a.pet_id, codigo: a.pet_codigo, nome: a.pet_nome, especie: a.especie, idade_anos: a.idade_anos ?? null, idade_meses: a.idade_meses ?? null, foto_id: a.pet_foto_id ?? null },
     tutor: { id: a.tutor_id, nome: a.tutor_nome, final_telefone: finalTelefone(a.tutor_whatsapp) },
   };
@@ -284,7 +287,7 @@ async function mudarStatus(request, env, id, { papeis, de, para, acao, mensagemE
   const u = papeis ? await exigirPapel(request, env, papeis) : await exigirLogin(request, env);
   const c = camposExtras ? await lerJson(request) : {};
   const antes = await atendimentoBruto(env, id);
-  const extras = camposExtras ? camposExtras(c, u) : { sql: '', args: [], depois: {} };
+  const extras = camposExtras ? await camposExtras(c, u) : { sql: '', args: [], depois: {} };
   if (antes.status !== de) throw new ErroHttp(409, mensagemErro);
   const agora = agoraISO();
   const r = await env.DB.prepare(`UPDATE atendimentos SET status = ?, atualizado_em = ?${extras.sql} WHERE id = ? AND status = ?`)
@@ -294,11 +297,49 @@ async function mudarStatus(request, env, id, { papeis, de, para, acao, mensagemE
   return json(await buscarItemAtendimento(env, id));
 }
 
-const atendimentosIniciar = (request, env, id) => mudarStatus(request, env, id, {
-  papeis: PAPEIS_CLINICOS, de: 'chegou', para: 'em_atendimento', acao: 'iniciar_atendimento',
-  mensagemErro: 'Só é possível iniciar um atendimento que está aguardando.',
-  camposExtras: (c, u) => ({ sql: ', veterinario_id = ?, iniciado_em = ?', args: [u.id, agoraISO()], depois: { veterinario_id: u.id } }),
-});
+// Quem marca o início: o veterinário (ele mesmo, a menos que indique outro), o suporte ou a recepção.
+// A recepção PRECISA dizer com qual veterinário o paciente entrou.
+async function avisarInicio(env, atendimentoId, usuario, vetId) {
+  try {
+    const item = await buscarItemAtendimento(env, atendimentoId);
+    await (env.NOTIFICAR_TESTE ?? notificar)(env, {
+      para: { usuarioId: vetId },
+      titulo: 'Paciente no consultório',
+      corpo: `${item.pet.nome} · marcado pela recepção`,
+      url: '#/hoje', tag: `atendimento-${atendimentoId}`,
+    });
+  } catch (e) {
+    console.error('Falha ao avisar início do atendimento:', e);
+  }
+}
+
+async function atendimentosIniciar(request, env, id) {
+  const resposta = await mudarStatus(request, env, id, {
+    papeis: PAPEIS_INICIAR, de: 'chegou', para: 'em_atendimento', acao: 'iniciar_atendimento',
+    mensagemErro: 'Só é possível iniciar um atendimento que está aguardando.',
+    camposExtras: async (c, u) => {
+      let vetId = c.veterinario_id;
+      if (vetId === undefined || vetId === null || vetId === '') {
+        if (u.papel === 'recepcao') throw new ErroHttp(400, 'Escolha com qual veterinário o paciente entrou.');
+        vetId = u.id; // veterinário e suporte: ele mesmo
+      }
+      if (typeof vetId !== 'number' || !Number.isInteger(vetId) || vetId < 1) throw new ErroHttp(400, 'Veterinário inválido.');
+      // Quem não é o próprio usuário precisa ser um veterinário ativo.
+      if (vetId !== u.id || u.papel === 'recepcao') {
+        const v = await env.DB.prepare(`SELECT id FROM usuarios WHERE id = ? AND papel = 'veterinario' AND ativo = 1`).bind(vetId).first();
+        if (!v) throw new ErroHttp(400, 'Escolha um veterinário ativo.');
+      }
+      return { sql: ', veterinario_id = ?, iniciado_em = ?, iniciado_por = ?', args: [vetId, agoraISO(), u.id], depois: { veterinario_id: vetId, iniciado_por: u.id, marcado_pela_recepcao: u.papel === 'recepcao' } };
+    },
+  });
+  // Marcado por outra pessoa: avisa o veterinário escolhido (nunca atrapalha a resposta).
+  if (resposta.status === 200) {
+    const u = await exigirLogin(request, env);
+    const item = await resposta.clone().json();
+    if (u.papel === 'recepcao' && item.veterinario) await avisarInicio(env, id, u, item.veterinario.id);
+  }
+  return resposta;
+}
 
 const atendimentosFinalizar = (request, env, id) => mudarStatus(request, env, id, {
   papeis: PAPEIS_CLINICOS, de: 'em_atendimento', para: 'finalizado', acao: 'finalizar_atendimento',

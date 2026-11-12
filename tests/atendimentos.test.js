@@ -214,11 +214,11 @@ test('hoje: finalizados mostra só os 20 mais recentes', async () => {
 });
 
 // ---------- iniciar / finalizar / cancelar ----------
-test('permissões: recepção não inicia nem finaliza (403); vet e suporte podem', async () => {
+test('permissões: recepção não finaliza (403) e só inicia dizendo o veterinário; vet e suporte podem', async () => {
   const { env, recepcao, vet, suporte, vet2 } = await ambiente();
   const pet = await novoPet(env, recepcao);
   const a = (await chamar(env, 'POST', '/api/atendimentos', { cookie: recepcao, corpo: chegada(pet) })).dados;
-  assert.equal((await chamar(env, 'POST', `/api/atendimentos/${a.id}/iniciar`, { cookie: recepcao })).status, 403);
+  assert.equal((await chamar(env, 'POST', `/api/atendimentos/${a.id}/iniciar`, { cookie: recepcao })).status, 400); // recepção sem veterinário
   const ini = await chamar(env, 'POST', `/api/atendimentos/${a.id}/iniciar`, { cookie: vet });
   assert.equal(ini.status, 200);
   assert.equal(ini.dados.status, 'em_atendimento');

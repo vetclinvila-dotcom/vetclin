@@ -467,7 +467,11 @@ async function registrarEBuscarChegada(env, { chegada, petId, usuarioId, ip }) {
 async function cadastroRapido(request, env) {
   const u = await exigirLogin(request, env);
   const c = await lerJson(request);
-  const pet = lerPet({ nome: c.pet?.nome, especie: c.pet?.especie }); // especie ausente = 'outro'
+  // especie ausente = 'outro'. Sexo, raça, idade e observações são opcionais (mesmas regras da edição do pet).
+  const pet = lerPet({
+    nome: c.pet?.nome, especie: c.pet?.especie, raca: c.pet?.raca, sexo: c.pet?.sexo, idade_anos: c.pet?.idade_anos,
+    idade_meses: c.pet?.idade_meses, nascimento_aprox: c.pet?.nascimento_aprox, observacoes: c.pet?.observacoes,
+  });
   // Chegada (opcional): validada ANTES de gravar qualquer coisa.
   const chegada = c.chegada !== undefined && c.chegada !== null ? lerChegada(c.chegada, u) : null;
   if (chegada?.fotoId) await exigirFoto(env, chegada.fotoId);
@@ -486,11 +490,11 @@ async function cadastroRapido(request, env) {
       if (dup.length) return respostaDuplicado(MSG_PET_DUPLICADO, 'pet', dup);
     }
     const codigo = await proximoCodigo(env, 'pet');
-    const inserirPet = comandoInserirPet(env, { codigo, tutorId, d: { ...pet, raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null }, origem, usuarioId: u.id, agora });
+    const inserirPet = comandoInserirPet(env, { codigo, tutorId, d: pet, origem, usuarioId: u.id, agora });
     // Com chegada, pet e atendimento são gravados juntos (ou entram os dois, ou nenhum).
     const saidas = await env.DB.batch([inserirPet, ...comandosChegada(env, { petCodigo: codigo, chegada, usuarioId: u.id, agora })]);
     const petId = saidas[0].meta.last_row_id;
-    await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
+    await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo, tutor_id: tutorId, ...pet, via: 'cadastro_rapido' }, ip });
     const atendimento = await registrarEBuscarChegada(env, { chegada, petId, usuarioId: u.id, ip });
     return json({ tutor: tutorCompleto(tutor), pet: petCompleto(await lerPetPorId(env, petId)), ...(atendimento ? { atendimento } : {}) }, 201);
   }
@@ -503,19 +507,18 @@ async function cadastroRapido(request, env) {
   }
   const codTutor = await proximoCodigo(env, 'tutor');
   const codPet = await proximoCodigo(env, 'pet');
-  const vazio = { raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null };
   // Tutor e pet são gravados juntos: ou entram os dois, ou nenhum.
   // Se vier "chegada", o atendimento entra no mesmo batch: tudo ou nada.
   const saidas = await env.DB.batch([
     comandoInserirTutor(env, { codigo: codTutor, ...t, observacoes: null, origem, usuarioId: u.id, agora }),
-    comandoInserirPet(env, { codigo: codPet, tutorCodigo: codTutor, d: { ...pet, ...vazio }, origem, usuarioId: u.id, agora }),
+    comandoInserirPet(env, { codigo: codPet, tutorCodigo: codTutor, d: pet, origem, usuarioId: u.id, agora }),
     ...comandosChegada(env, { petCodigo: codPet, chegada, usuarioId: u.id, agora }),
   ]);
   const [rt, rp] = saidas;
   const tutorId = rt.meta.last_row_id;
   const petId = rp.meta.last_row_id;
   await registrarAcao(env, { usuarioId: u.id, acao: 'criar_tutor', entidade: 'tutores', entidadeId: tutorId, depois: { codigo: codTutor, nome: t.nome, whatsapp: t.tel.e164, via: 'cadastro_rapido' }, ip });
-  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo: codPet, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
+  await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo: codPet, tutor_id: tutorId, ...pet, via: 'cadastro_rapido' }, ip });
   const atendimento = await registrarEBuscarChegada(env, { chegada, petId, usuarioId: u.id, ip });
   return json({ tutor: tutorCompleto(await buscarTutor(env, tutorId)), pet: petCompleto(await lerPetPorId(env, petId)), ...(atendimento ? { atendimento } : {}) }, 201);
 }

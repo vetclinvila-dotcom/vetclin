@@ -815,3 +815,11 @@ button.tile-menos { width: 30px; height: 30px; min-height: 30px; padding: 0; bor
 .barra-carrinho-texto { font-size: 1.125rem; color: var(--petroleo); }
 .barra-carrinho button { min-height: 52px; padding: 0 22px; font-size: 1.0625rem; }
 @media (min-width: 900px) { .barra-carrinho { margin: 0 -32px -56px; padding-left: 32px; padding-right: 32px; } }
+
+/* Chegada: "Mais detalhes do pet" (fechado até tocar) e botão "Entrou no consultório". */
+details.mais-detalhes { margin: 14px 0 4px; border: 1px solid var(--divisor); border-radius: var(--raio-campo); background: #fff; padding: 0 14px; }
+details.mais-detalhes[open] { padding-bottom: 14px; }
+details.mais-detalhes > summary { cursor: pointer; font-weight: 800; color: var(--petroleo); min-height: 52px; display: flex; align-items: center; }
+details.mais-detalhes .linha-idade { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+dialog.confirmacao .pergunta-vet { font-weight: 800; margin: 8px 0 10px; }
+dialog.confirmacao .grupo-chips button.chip-para { flex: 1 1 calc(50% - 10px); min-height: 60px; font-size: 1.0625rem; }
