@@ -1,7 +1,7 @@
 // Testes das regras puras da receita em colunas (public/receita-linhas.js, o mesmo código do app).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from '../public/receita-linhas.js';
+import { gruposDasLinhas, instrucaoDaLinha, linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from '../public/receita-linhas.js';
 
 const amox = { remedio: 'Amoxicilina', dose: '250 mg', como: '1 comprimido', intervalo: '12 h', duracao: '7 dias' };
 
@@ -39,11 +39,58 @@ test('asteriscos e quebras de linha digitados não quebram o negrito', () => {
   assert.equal(linhaDaReceita({ ...linhaVazia(), remedio: '*Amox*\nicilina', dose: ' 250   mg ' }), '*Amox icilina 250 mg*');
 });
 
-test('texto da receita: uma linha por remédio, pulando as vazias', () => {
-  const t = textoDasLinhas([amox, linhaVazia(), { ...linhaVazia(), remedio: 'Dipirona', dose: '500 mg', como: '10 gotas', intervalo: '8 h', duracao: '3 dias' }]);
-  assert.equal(t, '*Amoxicilina 250 mg* — 1 comprimido a cada 12 h por 7 dias\n*Dipirona 500 mg* — 10 gotas a cada 8 h por 3 dias');
+test('texto da receita: agrupado por via, numerado, com "comprar" e a instrução; linhas vazias puladas', () => {
+  const t = textoDasLinhas([
+    { ...amox, via: 'Uso oral', comprar: '1 CX' },
+    linhaVazia(),
+    { ...linhaVazia(), remedio: 'Otomax', como: 'Aplicar 5 gotas em cada ouvido', intervalo: '12 h', duracao: '10 dias', via: 'Uso otológico', comprar: '1 FR' },
+    { ...linhaVazia(), remedio: 'Dipirona', dose: '500 mg', como: '10 gotas', intervalo: '8 h', duracao: '3 dias' },
+  ]);
+  assert.equal(t, [
+    'USO ORAL',
+    '1 - *Amoxicilina 250 mg* ... 1 CX',
+    'Administrar 1 comprimido a cada 12 h, durante 7 dias.',
+    '2 - *Dipirona 500 mg*',
+    'Administrar 10 gotas a cada 8 h, durante 3 dias.',
+    '',
+    'USO OTOLÓGICO',
+    '1 - *Otomax* ... 1 FR',
+    'Aplicar 5 gotas em cada ouvido a cada 12 h, durante 10 dias.',
+  ].join('\n'));
   assert.equal(textoDasLinhas([]), '');
   assert.equal(textoDasLinhas(null), '');
+});
+
+test('gruposDasLinhas: separa por via na ordem de aparição e numera dentro de cada grupo', () => {
+  const g = gruposDasLinhas([
+    { remedio: 'Doxiciclina', dose: '100 mg', como: '1 comprimido e meio', intervalo: '12 horas', duracao: '28 dias', via: 'Uso oral', comprar: '1 CX' },
+    { remedio: 'Ceftriaxona', via: 'Uso injetável', comprar: '1 FR' },
+    { remedio: 'Prednisolona', dose: '20 mg', como: 'meio comprimido', intervalo: '24 horas', duracao: '10 dias', via: 'uso oral', comprar: '1 CX' },
+  ]);
+  assert.deepEqual(g, [
+    { via: 'USO ORAL', itens: [
+      { n: 1, titulo: 'Doxiciclina 100 mg', comprar: '1 CX', instrucao: 'Administrar 1 comprimido e meio a cada 12 horas, durante 28 dias.' },
+      { n: 2, titulo: 'Prednisolona 20 mg', comprar: '1 CX', instrucao: 'Administrar meio comprimido a cada 24 horas, durante 10 dias.' },
+    ] },
+    { via: 'USO INJETÁVEL', itens: [{ n: 1, titulo: 'Ceftriaxona', comprar: '1 FR', instrucao: '' }] },
+  ]);
+});
+
+test('via ausente (receita antiga) vale "Uso oral"; "Outro" usa o texto livre em maiúsculas', () => {
+  assert.equal(gruposDasLinhas([{ remedio: 'X', como: '1 cp' }])[0].via, 'USO ORAL');
+  assert.equal(gruposDasLinhas([{ remedio: 'X', via: '   ' }])[0].via, 'USO ORAL');
+  assert.equal(gruposDasLinhas([{ remedio: 'Shampoo', via: 'Banho' }])[0].via, 'BANHO');
+  assert.deepEqual(gruposDasLinhas([linhaVazia(), { ...linhaVazia(), via: 'Uso tópico' }]), []);
+});
+
+test('instrução: pula partes que faltam e não repete o verbo', () => {
+  assert.equal(instrucaoDaLinha({ como: '1 comprimido' }), 'Administrar 1 comprimido.');
+  assert.equal(instrucaoDaLinha({ como: '1 comprimido', duracao: '5 dias' }), 'Administrar 1 comprimido, durante 5 dias.');
+  assert.equal(instrucaoDaLinha({ intervalo: '12 h', duracao: '5 dias' }), 'Administrar a cada 12 h, durante 5 dias.');
+  assert.equal(instrucaoDaLinha({ como: 'Dar 1 sachê', intervalo: '24 h' }), 'Dar 1 sachê a cada 24 h.');
+  assert.equal(instrucaoDaLinha({ como: 'Pingar 3 gotas.' }), 'Pingar 3 gotas.');
+  assert.equal(instrucaoDaLinha({ como: 'aplicar fina camada', duracao: 'uso contínuo' }), 'aplicar fina camada, uso contínuo.');
+  assert.equal(instrucaoDaLinha({ remedio: 'X' }), '');
 });
 
 test('separar sugestão em remédio e dose', () => {

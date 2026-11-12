@@ -4,8 +4,12 @@
 
 export const CAMPOS = ['remedio', 'dose', 'como', 'intervalo', 'duracao'];
 
+// Vias (jeitos de dar o remédio). A primeira é a padrão; "Outro" deixa escrever o nome da via.
+export const VIAS = ['Uso oral', 'Uso injetável', 'Uso tópico', 'Uso otológico', 'Uso oftálmico'];
+export const VIA_PADRAO = VIAS[0];
+
 export function linhaVazia() {
-  return { remedio: '', dose: '', como: '', intervalo: '', duracao: '' };
+  return { remedio: '', dose: '', como: '', intervalo: '', duracao: '', via: VIA_PADRAO, comprar: '' };
 }
 
 // Limpa um campo: sem asteriscos (para não quebrar o negrito do WhatsApp), sem quebras de linha, sem espaços sobrando.
@@ -30,9 +34,56 @@ export function linhaDaReceita(l, { marcas = true } = {}) {
   return [cabeca, modo].filter(Boolean).join(' — ');
 }
 
-// A lista inteira vira o texto da receita: uma linha por remédio, sem as linhas vazias.
+// Frase de instrução: "Administrar 1 comprimido e meio a cada 12 horas, durante 28 dias."
+// Partes que faltam são puladas. Se o "como dar" já começa com um verbo (Aplicar, Dar, Pingar…),
+// não coloca "Administrar" na frente.
+const COMECA_COM_VERBO = /^(administrar|aplicar|dar|pingar|ministrar|oferecer|ofertar|usar|passar|lavar|limpar|instilar|borrifar|misturar|diluir|fornecer|esfregar|banhar|colocar)\b/i;
+export function instrucaoDaLinha(l) {
+  const como = campo(l?.como);
+  const intervalo = comPrefixo(l?.intervalo, 'a cada');
+  const duracao = comPrefixo(l?.duracao, 'durante');
+  if (!como && !intervalo && !duracao) return '';
+  const inicio = como && COMECA_COM_VERBO.test(como) ? como.replace(/[.;,\s]+$/, '') : ['Administrar', como].filter(Boolean).join(' ');
+  const frase = [inicio, intervalo].filter(Boolean).join(' ');
+  return `${frase}${duracao ? ', ' + duracao : ''}.`;
+}
+
+// O nome do grupo no papel: "Uso oral" -> "USO ORAL". Vazio vale "Uso oral" (receitas antigas).
+export function viaDaLinha(l) {
+  return (campo(l?.via) || VIA_PADRAO).toLocaleUpperCase('pt-BR');
+}
+
+// Agrupa os remédios por via (na ordem em que aparecem) e numera dentro de cada grupo.
+// Linhas totalmente vazias são puladas. Serve para o papel e para o texto da receita.
+// -> [{ via: 'USO ORAL', itens: [{ n, titulo, comprar, instrucao }] }]
+export function gruposDasLinhas(linhas) {
+  const grupos = [];
+  for (const l of linhas ?? []) {
+    const titulo = [campo(l?.remedio), campo(l?.dose)].filter(Boolean).join(' ');
+    const comprar = campo(l?.comprar);
+    const instrucao = instrucaoDaLinha(l);
+    if (!titulo && !comprar && !instrucao) continue;
+    const via = viaDaLinha(l);
+    let g = grupos.find((x) => x.via === via);
+    if (!g) { g = { via, itens: [] }; grupos.push(g); }
+    g.itens.push({ n: g.itens.length + 1, titulo, comprar, instrucao });
+  }
+  return grupos;
+}
+
+// A lista inteira vira o texto da receita (também usado nas sugestões e no WhatsApp):
+// USO ORAL
+// 1 - *Doxiciclina 100 mg* ... 1 CX
+// Administrar 1 comprimido e meio a cada 12 horas, durante 28 dias.
+// (uma linha em branco entre os grupos; linhas vazias são puladas)
 export function textoDasLinhas(linhas) {
-  return (linhas ?? []).map((l) => linhaDaReceita(l)).filter(Boolean).join('\n');
+  return gruposDasLinhas(linhas).map((g) => [
+    g.via,
+    ...g.itens.flatMap((i) => [
+      i.titulo || i.comprar ? `${i.n} - ${[i.titulo ? `*${i.titulo}*` : '', i.comprar].filter(Boolean).join(' ... ')}` : '',
+      i.instrucao,
+    ]).filter(Boolean),
+  ].join('\n')).join('\n\n');
 }
 
 // Dá para a sugestão "Amoxicilina 250 mg" virar remédio "Amoxicilina" + dose "250 mg".

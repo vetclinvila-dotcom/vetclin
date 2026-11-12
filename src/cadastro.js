@@ -391,7 +391,8 @@ async function petsVer(request, env, id) {
        FROM receitas r LEFT JOIN usuarios v ON v.id = r.veterinario_id LEFT JOIN usuarios cp ON cp.id = r.criado_por
       WHERE r.pet_id = ? ${soLiberadas} ORDER BY r.id DESC LIMIT 20`
   ).bind(id).all();
-  const previa = (t) => { const l = String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x) || ''; return l.length > 80 ? l.slice(0, 80) + '…' : l; };
+  // (pula o título do grupo "USO ORAL" e tira "1 - " e os pontinhos das receitas em colunas)
+  const previa = (t) => { const l = (String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x && !/^USO\b[^a-z\d]*$/.test(x)) || '').replace(/^1 - \*(.+?)\*( \.\.\. .*)?$/, '$1'); return l.length > 80 ? l.slice(0, 80) + '…' : l; };
   return json({
     pet: petCompleto(p),
     tutor: { id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp, final_telefone: finalTelefone(t.whatsapp), mesclado_em_id: t.mesclado_em_id ?? null },

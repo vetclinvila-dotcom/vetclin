@@ -46,6 +46,30 @@ async function criar(a, cookie = a.vet, extra = {}) {
 }
 
 // ---------- validação ----------
+test('lerLinhas: via (até 40) e comprar (até 30) entram limpos; sem eles, nada é inventado', () => {
+  assert.deepEqual(lerLinhas([{ remedio: 'Otomax', via: '  Uso   otológico ', comprar: ' 1 FR ' }]),
+    [{ remedio: 'Otomax', dose: '', como: '', intervalo: '', duracao: '', via: 'Uso otológico', comprar: '1 FR' }]);
+  assert.equal('via' in lerLinhas([{ remedio: 'X' }])[0], false);
+  assert.doesNotThrow(() => lerLinhas([{ via: 'v'.repeat(40), comprar: 'c'.repeat(30) }]));
+  assert.throws(() => lerLinhas([{ via: 'v'.repeat(41) }]), { status: 400 });
+  assert.throws(() => lerLinhas([{ comprar: 'c'.repeat(31) }]), { status: 400 });
+  assert.throws(() => lerLinhas([{ via: 3 }]), { status: 400 });
+  assert.throws(() => lerLinhas([{ comprar: ['1 CX'] }]), { status: 400 });
+});
+
+test('via e comprar gravam, voltam na API e a prévia da lista ignora o título do grupo', async () => {
+  const a = await ambiente();
+  const r = await criar(a);
+  const linhas = [{ ...LINHAS[0], via: 'Uso oral', comprar: '1 CX' }, { ...LINHAS[1], via: 'Uso injetável', comprar: '2 FR' }];
+  const p = await chamar(a.env, 'PATCH', `/api/receitas/${r.id}`, { cookie: a.vet, corpo: { texto: textoDasLinhas(linhas), linhas_json: linhas } });
+  assert.equal(p.status, 200, JSON.stringify(p.dados));
+  assert.deepEqual((await chamar(a.env, 'GET', `/api/receitas/${r.id}`, { cookie: a.vet })).dados.receita.linhas, linhas);
+  const ruim = await chamar(a.env, 'PATCH', `/api/receitas/${r.id}`, { cookie: a.vet, corpo: { linhas_json: [{ comprar: 'c'.repeat(31) }] } });
+  assert.equal(ruim.status, 400);
+  const lista = await chamar(a.env, 'GET', `/api/pets/${a.pet.id}`, { cookie: a.vet });
+  assert.equal(lista.dados.receitas.find((x) => x.id === r.id).previa, 'Amoxicilina 250 mg');
+});
+
 test('lerLinhas: aceita lista, limpa campos e completa os que faltam', () => {
   assert.equal(lerLinhas(null), null);
   assert.deepEqual(lerLinhas([]), []);
@@ -84,7 +108,7 @@ test('linhas_json: grava e volta como "linhas" (lista) junto com o texto gerado'
   assert.equal(p.status, 200);
   const v = (await chamar(a.env, 'GET', `/api/receitas/${r.id}`, { cookie: a.vet })).dados.receita;
   assert.deepEqual(v.linhas, LINHAS);
-  assert.equal(v.texto, '*Amoxicilina 250 mg* — 1 comprimido a cada 12 h por 7 dias\n*Dipirona 500 mg* — 10 gotas a cada 8 h por 3 dias');
+  assert.equal(v.texto, 'USO ORAL\n1 - *Amoxicilina 250 mg*\nAdministrar 1 comprimido a cada 12 h, durante 7 dias.\n2 - *Dipirona 500 mg*\nAdministrar 10 gotas a cada 8 h, durante 3 dias.');
   // no banco é um texto JSON
   const bruto = a.env.DB.bruto.prepare('SELECT linhas_json FROM receitas WHERE id = ?').get(r.id);
   assert.equal(typeof bruto.linhas_json, 'string');
@@ -152,7 +176,7 @@ test('liberar receita em colunas ensina remédios: "amox" sugere "Amoxicilina 25
   assert.deepEqual(rem.dados.sugestoes.map((s) => s.texto), ['Amoxicilina 250 mg']);
   // sem "tipo", continuam as linhas inteiras (comportamento de antes) e não misturam com os nomes
   const lin = await chamar(a.env, 'GET', '/api/sugestoes-receita?q=amox', { cookie: a.vet });
-  assert.deepEqual(lin.dados.sugestoes.map((s) => s.texto), ['*Amoxicilina 250 mg* — 1 comprimido a cada 12 h por 7 dias']);
+  assert.deepEqual(lin.dados.sugestoes.map((s) => s.texto), ['1 - *Amoxicilina 250 mg*']);
   // modo remédio não devolve linhas inteiras
   assert.equal((await chamar(a.env, 'GET', '/api/sugestoes-receita?tipo=remedio&q=comprimido', { cookie: a.vet })).dados.sugestoes.length, 0);
 });

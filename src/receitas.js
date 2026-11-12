@@ -14,6 +14,8 @@ const STATUS_VISIVEIS_RECEPCAO = ['liberada', 'impressa', 'entregue'];
 const MAX_ITENS = 100;
 const MAX_LINHAS = 100; // remédios (colunas) por receita
 const MAX_CAMPO_LINHA = 200;
+const MAX_VIA = 40; // "Uso oral", "Uso injetável"… (ou texto livre em "Outro")
+const MAX_COMPRAR = 30; // quantidade a comprar que vai no papel: "1 CX", "2 comprimidos"
 const CAMPOS_LINHA = ['remedio', 'dose', 'como', 'intervalo', 'duracao'];
 const MAX_DESCRICAO_ITEM = 300;
 const MAX_QUANTIDADE = 999;
@@ -60,13 +62,14 @@ async function avisar(env, aviso) {
 // Primeira linha do texto (para a prévia nas listas).
 function primeiraLinha(t) {
   // Tira as marcas do WhatsApp (*negrito*, _itálico_) e o marcador de lista "- " da prévia.
-  const l = (String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x) || '')
-    .replace(/^[-•]\s+/, '').replace(/\*/g, '').replace(/(^|\s)_(\S)/g, '$1$2').replace(/(\S)_(\s|$)/g, '$1$2');
+  const l = (String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x && !/^USO\b[^a-z\d]*$/.test(x)) || '')
+    .replace(/^[-•]\s+/, '').replace(/^1 - (\*.+?\*)( \.\.\. .*)?$/, '$1').replace(/\*/g, '').replace(/(^|\s)_(\S)/g, '$1$2').replace(/(\S)_(\s|$)/g, '$1$2');
   return l.length > 80 ? l.slice(0, 80) + '…' : l;
 }
 
 // Confere a lista de remédios (colunas) enviada pela tela. null = receita em texto livre.
-// Devolve a lista limpa (só os 5 campos, cada um texto de até 200 letras).
+// Devolve a lista limpa: os 5 campos (até 200 letras cada) e, se vierem, "via" (até 40) e "comprar" (até 30).
+// Receitas antigas não têm "via"/"comprar": esses campos só entram quando a tela os envia.
 export function lerLinhas(valor) {
   if (valor === null) return null;
   if (!Array.isArray(valor)) throw new ErroHttp(400, 'A lista de remédios deve ser uma lista.');
@@ -79,6 +82,14 @@ export function lerLinhas(valor) {
       if (typeof v !== 'string') throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} deve ser um texto.`);
       const t = v.replace(/[​-‍⁠﻿]/g, '').replace(/\s+/g, ' ').trim();
       if (t.length > MAX_CAMPO_LINHA) throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} está grande demais (máximo ${MAX_CAMPO_LINHA} letras).`);
+      linha[campo] = t;
+    }
+    for (const [campo, max] of [['via', MAX_VIA], ['comprar', MAX_COMPRAR]]) {
+      if (x[campo] === undefined || x[campo] === null) continue;
+      const v = x[campo];
+      if (typeof v !== 'string') throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} deve ser um texto.`);
+      const t = v.replace(/[​-‍⁠﻿]/g, '').replace(/\s+/g, ' ').trim();
+      if (t.length > max) throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} está grande demais (máximo ${max} letras).`);
       linha[campo] = t;
     }
     return linha;
@@ -282,6 +293,7 @@ export function linhasParaSugestao(textoReceita) {
   for (const bruta of String(textoReceita ?? '').split('\n')) {
     const linha = bruta.trim();
     if (linha.length < 4 || linha.length > 200) continue;
+    if (/^USO\b[^a-z\d]*$/.test(linha)) continue; // título de grupo ("USO ORAL"), não é remédio
     const chave = normalizarBusca(linha.replace(/\*/g, ''));
     if (chave.length < 4 || vistas.has(chave)) continue; // a mesma linha conta uma vez por receita
     vistas.set(chave, linha);
