@@ -126,10 +126,18 @@ async function avisarChegada(env, atendimentoId, usuarioId) {
 }
 
 // ---------- leitura ----------
+// Produtos "que temos" nas receitas do atendimento. Receitas canceladas não contam; e quando existe
+// uma nova versão (que não foi cancelada), só a nova conta, para não somar duas vezes.
+const PRODUTOS_DO_ATENDIMENTO = `
+  FROM receita_itens i JOIN receitas r ON r.id = i.receita_id
+ WHERE r.atendimento_id = a.id AND r.status <> 'cancelada' AND i.temos = 1
+   AND NOT EXISTS (SELECT 1 FROM receitas n WHERE n.receita_anterior_id = r.id AND n.status <> 'cancelada')`;
 const SELECT_ATENDIMENTO = `
   SELECT a.*, p.codigo AS pet_codigo, p.nome AS pet_nome, p.especie, p.idade_anos, p.idade_meses, p.foto_id AS pet_foto_id,
          t.id AS tutor_id, t.nome AS tutor_nome, t.whatsapp AS tutor_whatsapp,
-         v.nome AS vet_nome
+         v.nome AS vet_nome,
+         (SELECT COALESCE(SUM(i.quantidade * i.valor_unitario_centavos), 0) ${PRODUTOS_DO_ATENDIMENTO} AND i.valor_unitario_centavos IS NOT NULL) AS produtos_centavos,
+         (SELECT COUNT(*) ${PRODUTOS_DO_ATENDIMENTO} AND i.valor_unitario_centavos IS NULL) AS produtos_sem_valor
     FROM atendimentos a
     JOIN pets p ON p.id = a.pet_id
     JOIN tutores t ON t.id = p.tutor_id
@@ -147,6 +155,7 @@ function itemAtendimento(a, agoraMs) {
     espera_min: esperaMinutos(a, agoraMs),
     peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
     motivo: a.motivo ?? '', urgente: a.urgente === 1, foto_id: a.foto_id ?? null,
+    produtos_centavos: a.produtos_centavos ?? 0, produtos_sem_valor: a.produtos_sem_valor ?? 0,
     cancelado_em: a.cancelado_em ?? null, motivo_cancelamento: a.motivo_cancelamento ?? null,
     veterinario: a.veterinario_id ? { id: a.veterinario_id, nome: a.vet_nome } : null,
     pet: { id: a.pet_id, codigo: a.pet_codigo, nome: a.pet_nome, especie: a.especie, idade_anos: a.idade_anos ?? null, idade_meses: a.idade_meses ?? null, foto_id: a.pet_foto_id ?? null },

@@ -275,3 +275,26 @@ button.receita-linha { margin-bottom: 0; }
 .cartao-notificacoes ol { padding-left: 1.2em; line-height: 1.6; }
 .aviso-notificacoes:empty { display: none; }
 .aviso-notificacoes { color: var(--cor-texto-suave); margin-bottom: 0; }
+
+/* Produtos e valores da receita (só para a equipe; nada disto vai para o papel) */
+.produtos-secao h2 { margin-top: 0; }
+.produto-linha { border: 2px solid var(--cor-borda); border-radius: var(--raio); padding: 12px; margin: 10px 0; background: #fff; }
+.produto-linha.sim { border-color: var(--cor-destaque); background: #f0fdfa; }
+.produto-nome { font-weight: 600; overflow-wrap: anywhere; white-space: pre-wrap; margin-bottom: 8px; }
+.produto-temos { display: flex; align-items: center; gap: 12px; }
+.produto-pergunta { font-weight: 700; min-width: 70px; }
+.produto-temos .grupo-opcoes { flex: 1; }
+.produto-temos button.opcao { min-height: 56px; font-size: 1.15rem; font-weight: 700; }
+.produto-detalhes { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 10px; }
+.produto-detalhes[hidden] { display: none; }
+.produto-campo { margin: 0; font-size: 0.95rem; display: flex; flex-direction: column; }
+.produto-campo input { margin-top: 4px; }
+input.produto-qtd { width: 76px; text-align: center; }
+input.produto-valor { width: 130px; }
+input.invalido { border-color: var(--cor-erro); background: #fff1f2; }
+.produto-subtotal { font-weight: 600; padding-bottom: 12px; }
+.produtos-total { font-size: 1.25rem; font-weight: 800; margin: 14px 0 6px; }
+.produtos-aviso[hidden], .produtos-total[hidden] { display: none; }
+.lista-sem-valor { margin: 0 0 16px; padding-left: 22px; overflow-wrap: anywhere; }
+.atend-produtos { font-weight: 700; margin-top: 2px; }
+.selo-produto-sem-valor { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 8px; background: #fef3c7; color: #92400e; font-size: 0.9rem; font-weight: 700; }

@@ -11,6 +11,10 @@ const MAX_TEXTO = 10000;
 const MAX_ORIENTACOES = 5000;
 const MSG_JA_LIBERADA = 'Receita já liberada. Crie uma nova versão para corrigir.';
 const STATUS_VISIVEIS_RECEPCAO = ['liberada', 'impressa', 'entregue'];
+const MAX_ITENS = 100;
+const MAX_DESCRICAO_ITEM = 300;
+const MAX_QUANTIDADE = 999;
+const MAX_VALOR_CENTAVOS = 10_000_000; // R$ 100.000,00 por unidade
 const CHAVES_CLINICA = ['clinica_nome', 'clinica_endereco', 'clinica_telefone', 'clinica_cidade'];
 
 // ---------- apoio ----------
@@ -52,7 +56,9 @@ async function avisar(env, aviso) {
 
 // Primeira linha do texto (para a prévia nas listas).
 function primeiraLinha(t) {
-  const l = String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x) || '';
+  // Tira as marcas do WhatsApp (*negrito*, _itálico_) e o marcador de lista "- " da prévia.
+  const l = (String(t ?? '').split('\n').map((x) => x.trim()).find((x) => x) || '')
+    .replace(/^[-•]\s+/, '').replace(/\*/g, '').replace(/(^|\s)_(\S)/g, '$1$2').replace(/(\S)_(\s|$)/g, '$1$2');
   return l.length > 80 ? l.slice(0, 80) + '…' : l;
 }
 
@@ -107,6 +113,22 @@ async function ultimoPeso(env, petId) {
   return a ? { kg: a.peso_kg, data: a.chegada_em } : null;
 }
 
+// Produtos da receita com o total em centavos (só os que "temos" e já têm valor).
+// "itens_sem_valor" = quantos estão marcados como "temos" mas sem valor digitado.
+async function produtosDaReceita(env, id) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, ordem, descricao, temos, quantidade, valor_unitario_centavos FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
+  ).bind(id).all();
+  const itens = results.map((i) => ({
+    id: i.id, ordem: i.ordem, descricao: i.descricao, temos: i.temos === 1, quantidade: i.quantidade, valor_unitario_centavos: i.valor_unitario_centavos ?? null,
+  }));
+  return {
+    itens,
+    total_produtos_centavos: itens.reduce((t, i) => t + (i.temos && i.valor_unitario_centavos !== null ? i.quantidade * i.valor_unitario_centavos : 0), 0),
+    itens_sem_valor: itens.filter((i) => i.temos && i.valor_unitario_centavos === null).length,
+  };
+}
+
 async function detalheReceita(env, id) {
   const r = await env.DB.prepare(`${SELECT_RECEITA} WHERE r.id = ?`).bind(id).first();
   if (!r) throw new ErroHttp(404, 'Receita não encontrada.');
@@ -125,6 +147,7 @@ async function detalheReceita(env, id) {
       solicitada_por: r.solicitada_por ?? null, solicitada_por_nome: r.solicitada_por_nome ?? null, nota_pedido: r.nota_pedido ?? null,
       receita_anterior_id: r.receita_anterior_id ?? null,
       versao_seguinte: proxima ? { id: proxima.id, status: proxima.status } : null,
+      ...(await produtosDaReceita(env, id)),
     },
     pet: {
       id: r.pet_id, nome: r.pet_nome, especie: r.especie, raca: r.raca ?? null, sexo: r.sexo ?? null,
@@ -358,8 +381,73 @@ async function receitasNovaVersao(request, env, id) {
      VALUES (?, ?, ?, ?, ?, 'rascunho', ?, ?, ?, ?)`
   ).bind(base.pet_id, base.atendimento_id, u.id, base.texto, base.orientacoes, base.versao + 1, id, agora, agora).run();
   const novoId = r.meta.last_row_id;
+  // Os produtos e valores já digitados vão junto para a nova versão.
+  await env.DB.prepare(
+    `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, atualizado_em, atualizado_por)
+     SELECT ?, ordem, descricao, temos, quantidade, valor_unitario_centavos, ?, ? FROM receita_itens WHERE receita_id = ? ORDER BY ordem, id`
+  ).bind(novoId, agora, u.id, id).run();
   await registrarAcao(env, { usuarioId: u.id, acao: 'nova_versao_receita', entidade: 'receitas', entidadeId: novoId, depois: { receita_anterior_id: id, versao: base.versao + 1, texto_tamanho: base.texto.length }, ip: ipDe(request) });
   return json(await detalheReceita(env, novoId), 201);
+}
+
+// ---------- produtos e valores (só para a equipe) ----------
+// Lê e confere a lista enviada pela tela. "Não temos" vira sempre valor vazio e quantidade 1.
+function lerItens(c) {
+  if (!Array.isArray(c.itens)) throw new ErroHttp(400, 'Envie a lista de produtos.');
+  if (c.itens.length > MAX_ITENS) throw new ErroHttp(400, `Há produtos demais (máximo ${MAX_ITENS}).`);
+  return c.itens.map((x, n) => {
+    const nome = `produto ${n + 1}`;
+    if (x === null || typeof x !== 'object' || Array.isArray(x)) throw new ErroHttp(400, `Dados inválidos no ${nome}.`);
+    const descricao = limparTexto(x.descricao, `descrição do ${nome}`, MAX_DESCRICAO_ITEM).replace(/\s*\n\s*/g, ' ');
+    if (!descricao) throw new ErroHttp(400, `Falta a descrição do ${nome}.`);
+    if (x.temos !== true && x.temos !== false && x.temos !== 0 && x.temos !== 1) throw new ErroHttp(400, `Responda "Temos o produto?" no ${nome}.`);
+    const temos = x.temos === true || x.temos === 1;
+    if (!temos) return { descricao, temos: 0, quantidade: 1, valor: null };
+    let quantidade = 1;
+    if (x.quantidade !== undefined && x.quantidade !== null) {
+      quantidade = x.quantidade;
+      if (!Number.isInteger(quantidade) || quantidade < 1 || quantidade > MAX_QUANTIDADE) throw new ErroHttp(400, `A quantidade do ${nome} deve ser de 1 a ${MAX_QUANTIDADE}.`);
+    }
+    let valor = null;
+    if (x.valor_unitario_centavos !== undefined && x.valor_unitario_centavos !== null) {
+      valor = x.valor_unitario_centavos;
+      if (!Number.isInteger(valor) || valor < 0 || valor > MAX_VALOR_CENTAVOS) throw new ErroHttp(400, `O valor do ${nome} deve ficar entre R$ 0,00 e R$ 100.000,00.`);
+    }
+    return { descricao, temos: 1, quantidade, valor };
+  });
+}
+
+const resumoValores = (p) => ({ total_produtos_centavos: p.total_produtos_centavos, itens_sem_valor: p.itens_sem_valor, quantidade_itens: p.itens.length });
+
+// Troca a lista inteira de produtos. Qualquer pessoa da equipe pode (a recepção costuma digitar o
+// valor que o veterinário passou), em qualquer situação da receita, menos cancelada.
+async function receitasItensSalvar(request, env, id) {
+  const u = await exigirLogin(request, env);
+  const c = await lerJson(request);
+  const r = await receitaBruta(env, id);
+  exigirVisivel(u, r);
+  if (r.status === 'cancelada') throw new ErroHttp(409, 'Esta receita foi cancelada e não pode mais ser alterada.');
+  const itens = lerItens(c);
+  const antes = await produtosDaReceita(env, id);
+  const agora = agoraISO();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM receita_itens WHERE receita_id = ?').bind(id),
+    ...itens.map((i, n) => env.DB.prepare(
+      `INSERT INTO receita_itens (receita_id, ordem, descricao, temos, quantidade, valor_unitario_centavos, atualizado_em, atualizado_por)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, n, i.descricao, i.temos, i.quantidade, i.valor, agora, u.id)),
+  ]);
+  const depois = await produtosDaReceita(env, id);
+
+  // Como a tela grava sozinha enquanto a pessoa digita, várias gravações seguidas
+  // da mesma pessoa viram UMA linha no registro de ações (igual ao texto da receita).
+  const ultimo = await env.DB.prepare(`SELECT id, usuario_id, acao, em FROM registro_acoes WHERE entidade = 'receitas' AND entidade_id = ? ORDER BY id DESC LIMIT 1`).bind(id).first();
+  if (ultimo && ultimo.acao === 'editar_valores_receita' && ultimo.usuario_id === u.id && Date.now() - Date.parse(ultimo.em) < 10 * 60 * 1000) {
+    await env.DB.prepare('UPDATE registro_acoes SET depois = ?, em = ? WHERE id = ?').bind(JSON.stringify(resumoValores(depois)), agora, ultimo.id).run();
+  } else {
+    await registrarAcao(env, { usuarioId: u.id, acao: 'editar_valores_receita', entidade: 'receitas', entidadeId: id, antes: resumoValores(antes), depois: resumoValores(depois), ip: ipDe(request) });
+  }
+  return json({ ok: true, itens: depois.itens, total_produtos_centavos: depois.total_produtos_centavos, itens_sem_valor: depois.itens_sem_valor });
 }
 
 async function receitasCancelar(request, env, id) {
@@ -481,6 +569,7 @@ export const ROTAS_RECEITAS = [
   ['PATCH', '/api/receitas/:id', receitasAlterar],
   ['POST', '/api/receitas/transcrever', receitasTranscrever],
   ['POST', '/api/receitas/:id/liberar', receitasLiberar],
+  ['PUT', '/api/receitas/:id/itens', receitasItensSalvar],
   ['POST', '/api/receitas/:id/pedir', receitasPedir],
   ['POST', '/api/receitas/:id/nova-versao', receitasNovaVersao],
   ['POST', '/api/receitas/:id/cancelar', receitasCancelar],

@@ -326,7 +326,8 @@ async function petsVer(request, env, id) {
   // Receitas do pet (as 20 últimas). A recepção nunca vê rascunhos nem canceladas.
   const soLiberadas = u.papel === 'recepcao' ? `AND r.status IN ('liberada','impressa','entregue')` : '';
   const { results: receitas } = await env.DB.prepare(
-    `SELECT r.id, r.status, r.versao, r.liberada_em, r.criado_em, v.nome AS vet_nome, r.origem, cp.nome AS criado_por_nome, substr(r.texto, 1, 300) AS inicio
+    `SELECT r.id, r.status, r.versao, r.liberada_em, r.criado_em, v.nome AS vet_nome, r.origem, cp.nome AS criado_por_nome, substr(r.texto, 1, 300) AS inicio,
+            (SELECT COALESCE(SUM(i.quantidade * i.valor_unitario_centavos), 0) FROM receita_itens i WHERE i.receita_id = r.id AND i.temos = 1) AS total_produtos_centavos
        FROM receitas r LEFT JOIN usuarios v ON v.id = r.veterinario_id LEFT JOIN usuarios cp ON cp.id = r.criado_por
       WHERE r.pet_id = ? ${soLiberadas} ORDER BY r.id DESC LIMIT 20`
   ).bind(id).all();
@@ -335,7 +336,7 @@ async function petsVer(request, env, id) {
     pet: petCompleto(p),
     tutor: { id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp, final_telefone: finalTelefone(t.whatsapp), mesclado_em_id: t.mesclado_em_id ?? null },
     atendimento_aberto: aberto ? { id: aberto.id, status: aberto.status } : null,
-    receitas: receitas.map((r) => ({ id: r.id, status: r.status, versao: r.versao, liberada_em: r.liberada_em ?? null, criado_em: r.criado_em, veterinario: r.vet_nome ?? null, origem: r.origem, transcrita_por: r.origem === 'transcrita' ? r.criado_por_nome : null, previa: previa(r.inicio) })),
+    receitas: receitas.map((r) => ({ id: r.id, status: r.status, versao: r.versao, liberada_em: r.liberada_em ?? null, criado_em: r.criado_em, veterinario: r.vet_nome ?? null, origem: r.origem, transcrita_por: r.origem === 'transcrita' ? r.criado_por_nome : null, previa: previa(r.inicio), total_produtos_centavos: r.total_produtos_centavos })),
     atendimentos: results.map((a) => ({
       id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1,
       peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
@@ -535,6 +536,7 @@ async function dadosTesteApagar(request, env) {
     env.DB.prepare(`DELETE FROM pedidos WHERE id IN (${PEDIDOS_TESTE})`),
     // Receitas apontam para pets e atendimentos (e umas para as outras, nas versões): soltamos
     // as ligações entre elas e só então apagamos.
+    env.DB.prepare(`DELETE FROM receita_itens WHERE receita_id IN (${RECEITAS_TESTE})`),
     env.DB.prepare(`UPDATE receitas SET receita_anterior_id = NULL WHERE id IN (${RECEITAS_TESTE})`),
     env.DB.prepare(`DELETE FROM receitas WHERE id IN (${RECEITAS_TESTE})`),
     env.DB.prepare(`DELETE FROM atendimentos WHERE id IN (${ATEND_TESTE})`),

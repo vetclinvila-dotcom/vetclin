@@ -3,6 +3,8 @@
 // textContent (função "el"), nunca como HTML cru.
 
 import { cartaoNotificacoes } from './notificacoes-app.js';
+import { itensDoTexto } from './produtos-receita.js';
+import { MAX_VALOR_CENTAVOS, formatarReais, lerReais, reaisParaCampo } from './dinheiro.js';
 
 const raiz = document.getElementById('app');
 let usuario = null; // usuário logado
@@ -287,7 +289,7 @@ function confirmar(titulo, texto, rotuloOk) {
   return new Promise((resolve) => {
     const d = el('dialog', { class: 'confirmacao' },
       el('h2', {}, titulo),
-      ...[].concat(texto).map((t) => el('p', {}, t)),
+      ...[].concat(texto).map((t) => (t instanceof Node ? t : el('p', {}, t))),
       el('div', { class: 'acoes' },
         el('button', { type: 'button', id: 'confirmar-sim' }, rotuloOk),
         el('button', { type: 'button', class: 'secundario', id: 'confirmar-nao' }, 'Cancelar')));
@@ -516,7 +518,11 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
       pesoNo,
       a.motivo ? el('div', { class: 'atend-motivo' }, a.motivo) : null,
       el('div', { class: 'suave' }, `Tutor: ${a.tutor.nome}${a.tutor.final_telefone ? ' · final ' + a.tutor.final_telefone : ''}`),
-      el('div', { class: 'suave atend-hora' }, detalheHora())));
+      el('div', { class: 'suave atend-hora' }, detalheHora()),
+      a.produtos_centavos > 0 || a.produtos_sem_valor > 0
+        ? el('div', { class: 'atend-produtos' }, `Produtos: ${formatarReais(a.produtos_centavos)}`,
+          a.produtos_sem_valor > 0 ? el('span', { class: 'selo-produto-sem-valor' }, `${a.produtos_sem_valor} sem valor`) : null)
+        : null));
   corpo.addEventListener('keydown', (ev) => { if (ev.target === corpo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFicha(); } });
 
   // Roda uma ação (chamada à API) e atualiza a lista.
@@ -1462,6 +1468,171 @@ function linkWhatsapp(vet, mensagem) {
 }
 
 // ---------- Editor da receita ----------
+// ---------- Produtos e valores da receita (só para a equipe) ----------
+// Cada linha do texto da receita vira uma linha de produto. A equipe marca "Temos?" (Sim/Não);
+// se Sim, digita quantidade e valor. Os valores NUNCA vão para o papel impresso.
+
+// Quantidade digitada -> número de 1 a 999 (vazio vale 1); null se inválida.
+const lerQuantidade = (t) => { const x = String(t).trim(); if (!x) return 1; return /^\d{1,3}$/.test(x) && Number(x) >= 1 ? Number(x) : null; };
+
+// Cria a seção. "d" é a resposta de GET /api/receitas/:id; "pegarTexto()" devolve o texto atual da receita.
+// Devolve { caixa, aoMudarTexto(), salvarAgora(), semValor(), focarPrimeiroSemValor() }.
+function secaoProdutos(d, pegarTexto, minha) {
+  const id = d.receita.id;
+  const anteriores = d.receita.itens.map((i) => ({
+    descricao: i.descricao, temos: i.temos, qtd: String(i.quantidade), valor: i.temos ? reaisParaCampo(i.valor_unitario_centavos) : '',
+  }));
+  let itens = itensDoTexto(d.receita.texto, anteriores);
+  const lista = el('div', { class: 'produtos-lista' });
+  const total = el('div', { class: 'produtos-total', id: 'produtos-total' });
+  const aviso = el('div', { class: 'aviso-peso produtos-aviso', id: 'produtos-aviso' });
+  const estado = el('div', { class: 'estado-salvo', id: 'produtos-estado', role: 'status' });
+  const caixa = el('section', { class: 'cartao produtos-secao', id: 'produtos-secao' },
+    el('h2', {}, 'Produtos e valores (só para a equipe)'),
+    el('p', { class: 'suave' }, 'Não sai no papel da receita. Marque se a clínica tem o produto e digite o valor.'),
+    lista, total, aviso, estado);
+
+  const quantidadeDe = (it) => lerQuantidade(it.qtd) ?? 1;
+  const valorDe = (it) => { const v = lerReais(it.valor); return v !== null && v <= MAX_VALOR_CENTAVOS ? v : null; };
+  const subtotalDe = (it) => (it.temos && valorDe(it) !== null ? quantidadeDe(it) * valorDe(it) : 0);
+  const semValor = () => itens.filter((it) => it.temos && valorDe(it) === null);
+
+  // Texto do rodapé (total e aviso). Não mexe nas linhas, para não atrapalhar quem está digitando.
+  function atualizarRodape() {
+    total.textContent = `Total dos produtos: ${formatarReais(itens.reduce((t, it) => t + subtotalDe(it), 0))}`;
+    const n = semValor().length;
+    aviso.textContent = n === 1 ? "1 produto marcado como 'temos' está sem valor" : `${n} produtos marcados como 'temos' estão sem valor`;
+    aviso.hidden = n === 0;
+    total.hidden = itens.length === 0;
+  }
+
+  function desenharLinha(it) {
+    const subtotal = el('div', { class: 'produto-subtotal' });
+    const detalhes = el('div', { class: 'produto-detalhes' });
+    const linha = el('div', { class: 'produto-linha' + (it.temos ? ' sim' : '') });
+    const nao = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'nao' }, 'Não');
+    const sim = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'sim' }, 'Sim');
+    const qtd = el('input', { type: 'text', inputmode: 'numeric', class: 'produto-qtd', 'aria-label': `Quantidade de ${it.descricao}`, value: it.qtd, maxlength: 3, autocomplete: 'off' });
+    const valor = el('input', { type: 'text', inputmode: 'decimal', class: 'produto-valor', 'aria-label': `Valor de ${it.descricao} (R$)`, value: it.valor, placeholder: '0,00', maxlength: 14, autocomplete: 'off' });
+    const atualizar = () => {
+      nao.setAttribute('aria-checked', String(!it.temos));
+      sim.setAttribute('aria-checked', String(it.temos));
+      linha.classList.toggle('sim', it.temos);
+      detalhes.hidden = !it.temos;
+      const q = lerQuantidade(it.qtd); const v = lerReais(it.valor);
+      qtd.classList.toggle('invalido', q === null);
+      valor.classList.toggle('invalido', it.valor.trim() !== '' && (v === null || v > MAX_VALOR_CENTAVOS));
+      subtotal.textContent = valorDe(it) !== null ? `Subtotal: ${formatarReais(subtotalDe(it))}` : '';
+      atualizarRodape();
+    };
+    nao.addEventListener('click', () => { it.temos = false; atualizar(); agendar(); });
+    sim.addEventListener('click', () => { it.temos = true; atualizar(); agendar(); if (valorDe(it) === null) valor.focus(); });
+    qtd.addEventListener('input', () => { it.qtd = qtd.value; atualizar(); agendar(); });
+    valor.addEventListener('input', () => { it.valor = valor.value; atualizar(); agendar(); });
+    detalhes.append(
+      el('label', { class: 'produto-campo' }, 'Qtd', qtd),
+      el('label', { class: 'produto-campo' }, 'Valor (R$)', valor),
+      subtotal);
+    linha.append(
+      el('div', { class: 'produto-nome' }, it.descricao),
+      el('div', { class: 'produto-temos' },
+        el('span', { class: 'produto-pergunta' }, 'Temos?'),
+        el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': `Temos o produto ${it.descricao}?` }, nao, sim)),
+      detalhes);
+    it.campoValor = valor;
+    atualizar();
+    return linha;
+  }
+
+  function desenhar() {
+    lista.replaceChildren(...(itens.length ? itens.map(desenharLinha) : [el('p', { class: 'suave' }, 'Quando houver texto na receita, cada linha aparece aqui.')]));
+    atualizarRodape();
+  }
+
+  // ----- salvar (1 s depois da última mudança) -----
+  let ultimoEnvio = JSON.stringify(corpo());
+  let tempo = null; let salvando = null; let bloqueado = false;
+  function corpo() {
+    return { itens: itens.map((it) => ({
+      descricao: it.descricao, temos: it.temos, quantidade: it.temos ? quantidadeDe(it) : 1, valor_unitario_centavos: it.temos ? valorDe(it) : null,
+    })) };
+  }
+  async function salvarAgora() {
+    clearTimeout(tempo);
+    if (salvando) await salvando;
+    const envio = corpo(); const txt = JSON.stringify(envio);
+    if (txt === ultimoEnvio || bloqueado) return;
+    estado.textContent = 'Salvando…'; estado.className = 'estado-salvo';
+    salvando = (async () => {
+      try {
+        await api('PUT', `/api/receitas/${id}/itens`, envio);
+        ultimoEnvio = txt;
+        estado.textContent = 'Salvo';
+      } catch (e) {
+        if (e.status === 409 || e.status === 403) { bloqueado = true; estado.textContent = 'Não salvo'; estado.className = 'estado-salvo erro'; return; }
+        estado.textContent = 'Não salvo — tentando de novo…'; estado.className = 'estado-salvo erro';
+        tempo = setTimeout(salvarAgora, 4000);
+      } finally { salvando = null; }
+    })();
+    await salvando;
+  }
+  function agendar() {
+    estado.textContent = 'Salvando…'; estado.className = 'estado-salvo';
+    clearTimeout(tempo);
+    tempo = setTimeout(salvarAgora, 1000);
+  }
+  // Ao sair da tela ou do app, grava na hora.
+  const aoSair = () => { if (document.visibilityState === 'hidden' || document.visibilityState === undefined) salvarAgora(); };
+  document.addEventListener('visibilitychange', aoSair);
+  window.addEventListener('hashchange', () => { document.removeEventListener('visibilitychange', aoSair); salvarAgora(); }, { once: true });
+
+  // O texto da receita mudou: refaz a lista (guardando as escolhas) só se as linhas mudaram.
+  let tempoTexto = null;
+  function sincronizar() {
+    clearTimeout(tempoTexto);
+    if (minha !== versaoTela) return;
+    const novos = itensDoTexto(pegarTexto(), itens);
+    const igual = novos.length === itens.length && novos.every((n, i) => n.descricao === itens[i].descricao);
+    if (igual) return;
+    itens = novos;
+    desenhar();
+    agendar();
+  }
+
+  desenhar();
+  estado.textContent = d.receita.itens.length ? 'Salvo' : '';
+  return {
+    caixa,
+    aoMudarTexto() { clearTimeout(tempoTexto); tempoTexto = setTimeout(sincronizar, 300); },
+    salvarAgora: async () => { sincronizar(); await salvarAgora(); },
+    semValor: () => semValor().map((it) => it.descricao),
+    focarPrimeiroSemValor() {
+      const it = semValor()[0];
+      if (it && it.campoValor) { it.campoValor.scrollIntoView({ block: 'center' }); it.campoValor.focus(); }
+    },
+  };
+}
+
+// Pergunta, uma vez por tentativa de liberar, o que fazer com produtos sem valor.
+// Devolve 'valor' (voltar e digitar) ou 'liberar' (seguir mesmo assim). Esc = voltar.
+function dialogoSemValor(descricoes) {
+  return new Promise((resolve) => {
+    const d = el('dialog', { class: 'confirmacao', id: 'dialogo-sem-valor' },
+      el('h2', {}, 'Produto sem valor'),
+      el('p', {}, 'Estes produtos estão sem valor:'),
+      el('ul', { class: 'lista-sem-valor' }, descricoes.map((t) => el('li', {}, t))),
+      el('div', { class: 'acoes' },
+        el('button', { type: 'button', id: 'sem-valor-colocar' }, 'Colocar valor agora'),
+        el('button', { type: 'button', class: 'secundario', id: 'sem-valor-liberar' }, 'Liberar mesmo assim')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    d.querySelector('#sem-valor-colocar').addEventListener('click', () => fechar('valor'));
+    d.querySelector('#sem-valor-liberar').addEventListener('click', () => fechar('liberar'));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar('valor'); });
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
 async function telaReceita(id) {
   const minha = versaoTela;
   carregando();
@@ -1549,7 +1720,7 @@ async function telaReceita(id) {
             if (!texto.value.slice(0, texto.selectionStart).endsWith('\n')) texto.setRangeText('\n', texto.selectionStart, texto.selectionStart, 'end');
             sugestoes.replaceChildren();
             texto.focus();
-            crescer(texto); agendar();
+            crescer(texto); agendar(); produtos.aoMudarTexto();
           });
           return b;
         }));
@@ -1557,13 +1728,14 @@ async function telaReceita(id) {
     }, 250);
   }
 
+  const produtos = secaoProdutos(d, () => texto.value, minha);
   texto.addEventListener('input', () => {
     if (/[​-‍⁠﻿\r]/.test(texto.value)) { // texto colado do WhatsApp pode trazer caracteres invisíveis
       const pos = limparInvisiveis(texto.value.slice(0, texto.selectionStart)).length;
       texto.value = limparInvisiveis(texto.value);
       texto.setSelectionRange(pos, pos);
     }
-    crescer(texto); agendar(); atualizarSugestoes();
+    crescer(texto); agendar(); atualizarSugestoes(); produtos.aoMudarTexto();
   });
   texto.addEventListener('click', atualizarSugestoes);
   texto.addEventListener('keyup', (ev) => { if (ev.key.startsWith('Arrow')) atualizarSugestoes(); });
@@ -1573,7 +1745,7 @@ async function telaReceita(id) {
   const modelo = el('button', { type: 'button', class: 'secundario', id: 'modelo-linha', onclick: () => {
     const v = texto.value;
     texto.setRangeText((v && !v.endsWith('\n') ? '\n' : '') + MODELO_LINHA, v.length, v.length, 'end');
-    texto.focus(); crescer(texto); agendar();
+    texto.focus(); crescer(texto); agendar(); produtos.aoMudarTexto();
   } }, '+ Modelo de linha');
 
   // ----- botões -----
@@ -1587,7 +1759,11 @@ async function telaReceita(id) {
   const liberar = el('button', { type: 'button', class: 'grande bloco', id: 'liberar' }, 'Liberar para impressão');
   liberar.addEventListener('click', comAviso(liberar, async () => {
     await salvarAgora();
+    await produtos.salvarAgora();
     if (!texto.value.trim()) throw new Error('Escreva a receita antes de liberar.');
+    // Produto marcado como "temos" sem valor: avisa UMA vez e deixa a pessoa escolher.
+    const faltam = produtos.semValor();
+    if (faltam.length && (await dialogoSemValor(faltam)) === 'valor') { produtos.focarPrimeiroSemValor(); return; }
     // O CRMV vem da lista de veterinários (a sessão não o carrega).
     const eu = (await api('GET', '/api/usuarios/veterinarios')).veterinarios.find((v) => v.id === usuario.id);
     const crmv = eu && eu.crmv ? rotuloCrmv(eu.crmv) : 'sem CRMV cadastrado (peça ao administrador)';
@@ -1600,6 +1776,7 @@ async function telaReceita(id) {
   const pedir = el('button', { type: 'button', class: 'secundario bloco', id: 'pedir' }, 'Enviar pelo WhatsApp para outro veterinário');
   pedir.addEventListener('click', comAviso(pedir, async () => {
     await salvarAgora();
+    await produtos.salvarAgora();
     const { veterinarios } = await api('GET', '/api/usuarios/veterinarios');
     const outros = veterinarios.filter((v) => v.id !== usuario.id);
     if (!outros.length) throw new Error('Não há outro veterinário ativo cadastrado.');
@@ -1616,20 +1793,21 @@ async function telaReceita(id) {
   }));
 
   const previa = el('button', { type: 'button', class: 'secundario bloco', id: 'ver-previa' }, 'Ver como vai sair');
-  previa.addEventListener('click', comAviso(previa, async () => { await salvarAgora(); irPara(`#/receita/${id}/imprimir`); }));
+  previa.addEventListener('click', comAviso(previa, async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/receita/${id}/imprimir`); }));
 
   const cancelar = el('button', { type: 'button', class: 'secundario perigo bloco', id: 'cancelar-receita' }, 'Cancelar receita');
   cancelar.addEventListener('click', comAviso(cancelar, async () => {
     if (!(await confirmar('Cancelar esta receita?', 'O rascunho será descartado.', 'Sim, cancelar receita'))) return;
     bloqueada = true;
     clearTimeout(tempoSalvar);
+    await produtos.salvarAgora();
     await api('POST', `/api/receitas/${id}/cancelar`, {});
     irPara(`#/pet/${d.pet.id}`);
   }));
 
   mostrar(
     cabecalho(),
-    el('button', { class: 'secundario voltar', type: 'button', onclick: async () => { await salvarAgora(); irPara(`#/pet/${d.pet.id}`); } }, '← Ficha do pet'),
+    el('button', { class: 'secundario voltar', type: 'button', onclick: async () => { await salvarAgora(); await produtos.salvarAgora(); irPara(`#/pet/${d.pet.id}`); } }, '← Ficha do pet'),
     cabecaReceita(d),
     r.solicitada_por_nome && r.solicitada_a === usuario.id
       ? el('div', { class: 'mensagem ok' }, `${r.solicitada_por_nome} pediu esta receita para você${r.nota_pedido ? ': ' + r.nota_pedido : '.'}`) : null,
@@ -1639,6 +1817,7 @@ async function telaReceita(id) {
     texto, estado, sugestoes,
     el('div', { class: 'acoes' }, modelo),
     blocoOrient,
+    produtos.caixa,
     avisos,
     el('div', { class: 'botoes-receita' },
       ehVet ? liberar : el('p', { class: 'suave' }, 'Só o veterinário libera a receita. Envie para o veterinário liberar.'),
@@ -1655,6 +1834,7 @@ function telaReceitaLeitura(d, minha, mensagem = null) {
   const podeCorrigir = PODE_ATENDER.includes(usuario.papel) && ['liberada', 'impressa', 'entregue'].includes(r.status);
   const area = el('div');
   const botoes = [];
+  const produtos = r.status === 'cancelada' ? null : secaoProdutos(d, () => r.texto, minha);
   if (['liberada', 'impressa', 'entregue'].includes(r.status)) {
     botoes.push(el('button', { type: 'button', class: 'grande bloco', id: 'ir-imprimir', onclick: () => irPara(`#/receita/${r.id}/imprimir`) }, 'Imprimir'));
   }
@@ -1683,6 +1863,7 @@ function telaReceitaLeitura(d, minha, mensagem = null) {
     r.versao_seguinte && r.status !== 'cancelada' ? el('div', { class: 'mensagem ok' }, 'Existe uma nova versão desta receita.', ' ', el('a', { href: `#/receita/${r.versao_seguinte.id}` }, 'Abrir')) : null,
     el('div', { class: 'cartao' }, el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.texto)),
       r.orientacoes ? el('div', { class: 'folha-orientacoes' }, el('strong', {}, 'Orientações'), el('div', { class: 'folha-corpo' }, ...renderizarReceita(r.orientacoes))) : null),
+    produtos ? produtos.caixa : null,
     area, el('div', { class: 'botoes-receita' }, botoes));
 }
 
@@ -1740,6 +1921,7 @@ async function telaImprimirReceita(id) {
     cabecalho(),
     rascunho ? el('div', { class: 'mensagem erro so-tela' }, 'Prévia: esta receita ainda não foi liberada, não dá para imprimir.') : null,
     el('div', { class: 'so-tela suave' }, `Receita de ${d.pet.nome}`, ' ', chipReceita(r.status)),
+    !rascunho && r.status !== 'cancelada' ? el('p', { class: 'so-tela' }, el('a', { href: `#/receita/${id}`, id: 'ir-produtos' }, 'Produtos e valores (só para a equipe)')) : null,
     faltaClinica && usuario.admin ? el('p', { class: 'so-tela aviso-peso' }, 'Faltam endereço, telefone e cidade da clínica no papel. ', el('a', { href: '#/usuarios' }, 'Preencher Dados da clínica')) : null,
     botoes, area,
     montarFolha(dadosDaFolha(d, vetPrevia)));
@@ -1882,6 +2064,7 @@ function listaReceitasPet(receitas) {
       el('div', { class: 'hist-linha' }, chipReceita(x.status), x.versao > 1 ? el('span', { class: 'etiqueta' }, `Versão ${x.versao}`) : null,
         el('span', { class: 'suave' }, formatarDia(x.liberada_em || x.criado_em))),
       x.previa ? el('div', {}, x.previa) : el('div', { class: 'suave' }, '(vazia)'),
+      x.total_produtos_centavos > 0 ? el('div', { class: 'atend-produtos' }, `Produtos: ${formatarReais(x.total_produtos_centavos)}`) : null,
       el('div', { class: 'suave' }, [x.veterinario ? comTratamento(x.veterinario) : null, x.transcrita_por ? `transcrita por ${x.transcrita_por}` : null].filter(Boolean).join(' · '))))));
 }
 
