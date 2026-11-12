@@ -21,12 +21,12 @@
 
   // Banco de dados D1 (SQLite da Cloudflare).
   // O database_id é preenchido durante a instalação: troque
-  // "3e42fa63-eae9-47c6-adb0-6a895229d0d0" pelo ID mostrado ao criar o banco.
+  // "COLE_AQUI_O_ID_DO_BANCO" (na linha database_id abaixo) pelo ID do banco.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "vetclin",
-      "database_id": "COLE_AQUI_O_ID_DO_BANCO",
+      "database_id": "3e42fa63-eae9-47c6-adb0-6a895229d0d0",
       "migrations_dir": "migrations"
     }
   ],
