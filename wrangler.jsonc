@@ -21,7 +21,7 @@
 
   // Banco de dados D1 (SQLite da Cloudflare).
   // O database_id é preenchido durante a instalação: troque
-  // "COLE_AQUI_O_ID_DO_BANCO" pelo ID mostrado ao criar o banco.
+  // "3e42fa63-eae9-47c6-adb0-6a895229d0d0" pelo ID mostrado ao criar o banco.
   "d1_databases": [
     {
       "binding": "DB",
