@@ -133,3 +133,80 @@ dialog.confirmacao h2 { margin-top: 0; }
   form button[type="submit"] { width: auto; }
   .acoes-grandes { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------- Passo 3: chegada, tela Hoje e fotos ---------- */
+[hidden] { display: none !important; }
+.escondido { display: none; }
+button.bloco { width: 100%; margin-bottom: 16px; }
+button.perigo { color: #9f1239; border-color: #9f1239; }
+button.perigo:hover { background: #fff1f2; }
+
+/* Peso: o dado mais importante, então é o maior campo da tela */
+.rotulo-peso { font-size: 1.3rem; margin-top: 4px; }
+input.peso-entrada { min-height: 76px; font-size: 2.2rem; font-weight: 700; text-align: center; border-width: 3px; border-color: var(--cor-destaque); }
+input.peso-entrada:disabled { background: #f3f4f6; border-color: var(--cor-borda); }
+.linha-pesar-depois { margin-top: 8px; }
+.aviso-peso { padding: 10px 12px; border-radius: 10px; background: #fef3c7; color: #92400e; font-weight: 500; margin: 8px 0; }
+.bloco-chegada { margin: 0; }
+.chave-chegada { margin-top: 16px; padding: 4px 12px; background: #ecfdf5; border-radius: 10px; font-weight: 700; }
+
+/* Urgência: Normal / URGENTE */
+.grupo-opcoes.dois { grid-template-columns: 1fr 1fr; }
+button.opcao.urgente { color: #9f1239; border-color: #fda4af; }
+button.opcao.urgente[aria-checked="true"] { color: #fff; background: #be123c; border-color: #9f1239; }
+
+/* Foto */
+.campo-foto .acoes { margin-bottom: 8px; }
+.foto-previa { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+img.foto-grande { width: 120px; height: 120px; object-fit: cover; border-radius: 12px; border: 1px solid var(--cor-borda); }
+.miniatura { width: 72px; height: 72px; flex: none; border-radius: 12px; object-fit: cover; background: #e6f4f1; }
+.miniatura.sem-foto, .foto-ficha.sem-foto { display: flex; align-items: center; justify-content: center; font-size: 2rem; font-weight: 700; color: var(--cor-destaque-escura); }
+.foto-ficha { width: 96px; height: 96px; flex: none; border-radius: 16px; object-fit: cover; background: #e6f4f1; }
+.cabeca-ficha { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.cabeca-ficha .nome-pet { margin: 0; }
+.cabeca-chegada { display: flex; align-items: center; gap: 14px; }
+
+/* Cartões da tela Hoje */
+.secao-hoje { margin-bottom: 24px; }
+.secao-titulo { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; padding: 10px 14px; border-radius: 10px; font-size: 1.2rem; font-weight: 700; }
+.secao-hoje.aguardando .secao-titulo { background: #fef3c7; color: #92400e; }
+.secao-hoje.em-atendimento .secao-titulo { background: #cffafe; color: #155e75; }
+.secao-hoje.finalizados .secao-titulo { background: #e5e7eb; color: #374151; cursor: pointer; }
+.contador { min-width: 32px; padding: 0 10px; text-align: center; border-radius: 999px; background: rgba(255, 255, 255, 0.7); }
+.vazio-secao { margin: 0 0 8px 4px; }
+
+.cartao.atend { padding: 0; overflow: hidden; border-left: 6px solid #f59e0b; }
+.cartao.atend.em_atendimento { border-left-color: #0891b2; }
+.cartao.atend.finalizado { border-left-color: #9ca3af; }
+.cartao.atend.urgente { border-left-color: #be123c; background: #fff7f8; }
+.atend-corpo { display: flex; gap: 14px; padding: 14px; cursor: pointer; }
+.atend-corpo:focus-visible { outline: 3px solid #5eead4; outline-offset: -3px; }
+.atend-info { flex: 1; min-width: 0; }
+.atend-nome { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+.peso-grande { font-size: 2.1rem; font-weight: 800; line-height: 1.2; margin: 2px 0; }
+.peso-faltando { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.selo-sem-peso { display: inline-block; padding: 4px 12px; border-radius: 8px; background: #be123c; color: #fff; font-weight: 800; font-size: 1.15rem; }
+.selo-sem-peso.pequeno { font-size: 0.9rem; padding: 1px 8px; }
+.selo-urgente { display: inline-block; margin-left: 10px; padding: 2px 10px; border-radius: 6px; background: #be123c; color: #fff; font-size: 0.85rem; font-weight: 800; vertical-align: middle; }
+button.adicionar-peso { min-height: 44px; padding: 6px 14px; background: #fff; color: #9f1239; border-color: #be123c; }
+button.adicionar-peso:hover { background: #fff1f2; }
+.atend-motivo { margin: 2px 0; font-weight: 500; }
+.atend-hora { font-size: 0.95rem; }
+.atend-acoes { padding: 0 14px 14px; }
+.atend-acoes button { flex: 1 1 140px; }
+button.iniciar { background: #0e7490; border-color: #0e7490; }
+button.iniciar:hover { background: #155e75; }
+
+/* Histórico na ficha do pet */
+.hist-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hist-peso { font-size: 1.25rem; font-weight: 800; }
+
+@media (min-width: 720px) {
+  .atend-acoes button { flex: 0 0 auto; }
+}
+/* Em tela larga (computador da recepção) a tela Hoje usa duas colunas. */
+@media (min-width: 1000px) {
+  #app.larga { max-width: 1160px; }
+  .hoje-grade { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; align-items: start; }
+  .hoje-grade > .cartao.vazio, .hoje-grade > .secao-hoje.finalizados, .hoje-grade > p { grid-column: 1 / -1; }
+}

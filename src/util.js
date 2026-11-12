@@ -39,6 +39,48 @@ export async function lerJson(request, limite = 64 * 1024) {
   }
 }
 
+// Lê o corpo "cru" (bytes), como o de uma foto, recusando o que passar do limite.
+// Devolve um ArrayBuffer. Confere o tamanho avisado e também o que realmente chegou.
+export async function lerCorpoBruto(request, limite) {
+  const aviso = Number(request.headers.get('Content-Length'));
+  const grande = () => new ErroHttp(413, 'O arquivo é grande demais.');
+  if (Number.isFinite(aviso) && aviso > limite) throw grande();
+  if (!request.body) return new ArrayBuffer(0);
+  const leitor = request.body.getReader();
+  const partes = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await leitor.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limite) {
+      await leitor.cancel();
+      throw grande();
+    }
+    partes.push(value);
+  }
+  const saida = new Uint8Array(total);
+  let pos = 0;
+  for (const p of partes) { saida.set(p, pos); pos += p.byteLength; }
+  return saida.buffer;
+}
+
+// A clínica fica em America/Bahia: UTC-03:00 o ano todo (sem horário de verão).
+const DESLOCAMENTO_BAHIA_MS = 3 * 60 * 60 * 1000;
+
+// Começo do dia (00:00 em Bahia) em que "agora" cai, em texto ISO UTC.
+// Ex.: 2026-11-11T02:59:59Z ainda é dia 10 em Bahia -> 2026-11-10T03:00:00.000Z.
+export function inicioDoDiaBahia(agora = new Date()) {
+  const local = new Date(new Date(agora).getTime() - DESLOCAMENTO_BAHIA_MS); // relógio de Bahia, lido como UTC
+  return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) + DESLOCAMENTO_BAHIA_MS).toISOString();
+}
+
+// Últimos 4 números do telefone (é só isso que as telas mostram).
+export function finalTelefone(e164) {
+  const d = String(e164 ?? '').replace(/\D/g, '');
+  return d.length >= 4 ? d.slice(-4) : '';
+}
+
 // Data e hora de agora, em texto ISO (UTC).
 export function agoraISO() {
   return new Date().toISOString();

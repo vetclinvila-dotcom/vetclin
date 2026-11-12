@@ -1,6 +1,7 @@
 // Cadastro de tutores e pets: busca, criação, edição, junção e limpeza de testes.
 import { exigirAdmin, exigirLogin } from './auth.js';
-import { ErroHttp, agoraISO, ipDe, json, lerJson, prepararAcao, proximoCodigo, registrarAcao, texto } from './util.js';
+import { ErroHttp, agoraISO, finalTelefone, ipDe, json, lerJson, prepararAcao, proximoCodigo, registrarAcao, texto } from './util.js';
+import { buscarItemAtendimento, comandoFotoDoPet, comandoInserirAtendimento, exigirFoto, lerChegada, registrarChegada } from './atendimentos.js';
 
 const ESPECIES = ['cao', 'gato', 'outro'];
 const SEXOS = ['macho', 'femea'];
@@ -37,11 +38,8 @@ export function normalizarWhatsapp(entrada) {
   return { e164: '+' + d, digitos: d };
 }
 
-// Últimos 4 números do telefone (é só isso que a busca mostra).
-export function finalTelefone(e164) {
-  const d = String(e164 ?? '').replace(/\D/g, '');
-  return d.length >= 4 ? d.slice(-4) : '';
-}
+// (finalTelefone agora mora em util.js; continua disponível por aqui.)
+export { finalTelefone };
 
 // Origem do cadastro conforme quem está logado.
 function origemDe(usuario) {
@@ -98,6 +96,7 @@ function petCompleto(p) {
     idade_anos: p.idade_anos ?? null, idade_meses: p.idade_meses ?? null,
     nascimento_aprox: p.nascimento_aprox ?? null, observacoes: p.observacoes ?? null,
     origem: p.origem, ativo: p.ativo === 1, criado_em: p.criado_em, atualizado_em: p.atualizado_em,
+    foto_id: p.foto_id ?? null,
   };
 }
 
@@ -317,13 +316,22 @@ async function petsVer(request, env, id) {
   await exigirLogin(request, env);
   const p = await lerPetPorId(env, id);
   const t = await buscarTutor(env, p.tutor_id);
+  // Histórico de atendimentos (o peso de cada visita é o dado mais importante para os médicos).
   const { results } = await env.DB.prepare(
-    'SELECT id, chegada_em, status, motivo, urgente FROM atendimentos WHERE pet_id = ? ORDER BY chegada_em DESC, id DESC LIMIT 20'
+    `SELECT a.id, a.chegada_em, a.status, a.motivo, a.urgente, a.peso_kg, a.peso_origem, a.foto_id, v.nome AS vet_nome
+       FROM atendimentos a LEFT JOIN usuarios v ON v.id = a.veterinario_id
+      WHERE a.pet_id = ? ORDER BY a.chegada_em DESC, a.id DESC LIMIT 50`
   ).bind(id).all();
+  const aberto = await env.DB.prepare(`SELECT id, status FROM atendimentos WHERE pet_id = ? AND status IN ('chegou','em_atendimento')`).bind(id).first();
   return json({
     pet: petCompleto(p),
     tutor: { id: t.id, codigo: t.codigo, nome: t.nome, whatsapp: t.whatsapp, final_telefone: finalTelefone(t.whatsapp), mesclado_em_id: t.mesclado_em_id ?? null },
-    atendimentos: results.map((a) => ({ id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1 })),
+    atendimento_aberto: aberto ? { id: aberto.id, status: aberto.status } : null,
+    atendimentos: results.map((a) => ({
+      id: a.id, chegada_em: a.chegada_em, status: a.status, motivo: a.motivo ?? null, urgente: a.urgente === 1,
+      peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, sem_peso: a.peso_kg === null || a.peso_kg === undefined,
+      foto_id: a.foto_id ?? null, veterinario: a.vet_nome ?? null,
+    })),
   });
 }
 
@@ -360,10 +368,31 @@ async function petsAlterar(request, env, id) {
 }
 
 // ---------- cadastro rápido ----------
+// Comandos extras do batch quando há chegada: atendimento (+ foto de perfil do pet).
+function comandosChegada(env, { petCodigo, chegada, usuarioId, agora }) {
+  if (!chegada) return [];
+  return [
+    comandoInserirAtendimento(env, { petCodigo, a: chegada, usuarioId, agora }),
+    ...(chegada.fotoId ? [comandoFotoDoPet(env, { petCodigo, fotoId: chegada.fotoId, agora })] : []),
+  ];
+}
+
+// Depois do batch: registra a chegada no registro de ações e devolve o atendimento.
+// (O pet acabou de ser criado, então o atendimento mais recente dele é o desta chegada.)
+async function registrarEBuscarChegada(env, { chegada, petId, usuarioId, ip }) {
+  if (!chegada) return null;
+  const linha = await env.DB.prepare('SELECT id FROM atendimentos WHERE pet_id = ? ORDER BY id DESC LIMIT 1').bind(petId).first();
+  await registrarChegada(env, { usuarioId, atendimentoId: linha.id, petId, a: chegada, ip, via: 'cadastro_rapido' });
+  return buscarItemAtendimento(env, linha.id);
+}
+
 async function cadastroRapido(request, env) {
   const u = await exigirLogin(request, env);
   const c = await lerJson(request);
   const pet = lerPet({ nome: c.pet?.nome, especie: c.pet?.especie }); // especie ausente = 'outro'
+  // Chegada (opcional): validada ANTES de gravar qualquer coisa.
+  const chegada = c.chegada !== undefined && c.chegada !== null ? lerChegada(c.chegada, u) : null;
+  if (chegada?.fotoId) await exigirFoto(env, chegada.fotoId);
   const origem = origemDe(u);
   const ip = ipDe(request);
   const agora = agoraISO();
@@ -378,10 +407,13 @@ async function cadastroRapido(request, env) {
       if (dup.length) return respostaDuplicado(MSG_PET_DUPLICADO, 'pet', dup);
     }
     const codigo = await proximoCodigo(env, 'pet');
-    const r = await comandoInserirPet(env, { codigo, tutorId, d: { ...pet, raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null }, origem, usuarioId: u.id, agora }).run();
-    const petId = r.meta.last_row_id;
+    const inserirPet = comandoInserirPet(env, { codigo, tutorId, d: { ...pet, raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null }, origem, usuarioId: u.id, agora });
+    // Com chegada, pet e atendimento são gravados juntos (ou entram os dois, ou nenhum).
+    const saidas = await env.DB.batch([inserirPet, ...comandosChegada(env, { petCodigo: codigo, chegada, usuarioId: u.id, agora })]);
+    const petId = saidas[0].meta.last_row_id;
     await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
-    return json({ tutor: tutorCompleto(tutor), pet: petCompleto(await lerPetPorId(env, petId)) }, 201);
+    const atendimento = await registrarEBuscarChegada(env, { chegada, petId, usuarioId: u.id, ip });
+    return json({ tutor: tutorCompleto(tutor), pet: petCompleto(await lerPetPorId(env, petId)), ...(atendimento ? { atendimento } : {}) }, 201);
   }
 
   // Caso 2: tutor novo.
@@ -394,15 +426,19 @@ async function cadastroRapido(request, env) {
   const codPet = await proximoCodigo(env, 'pet');
   const vazio = { raca: null, sexo: null, idade_anos: null, idade_meses: null, nascimento_aprox: null, observacoes: null };
   // Tutor e pet são gravados juntos: ou entram os dois, ou nenhum.
-  const [rt, rp] = await env.DB.batch([
+  // Se vier "chegada", o atendimento entra no mesmo batch: tudo ou nada.
+  const saidas = await env.DB.batch([
     comandoInserirTutor(env, { codigo: codTutor, ...t, observacoes: null, origem, usuarioId: u.id, agora }),
     comandoInserirPet(env, { codigo: codPet, tutorCodigo: codTutor, d: { ...pet, ...vazio }, origem, usuarioId: u.id, agora }),
+    ...comandosChegada(env, { petCodigo: codPet, chegada, usuarioId: u.id, agora }),
   ]);
+  const [rt, rp] = saidas;
   const tutorId = rt.meta.last_row_id;
   const petId = rp.meta.last_row_id;
   await registrarAcao(env, { usuarioId: u.id, acao: 'criar_tutor', entidade: 'tutores', entidadeId: tutorId, depois: { codigo: codTutor, nome: t.nome, whatsapp: t.tel.e164, via: 'cadastro_rapido' }, ip });
   await registrarAcao(env, { usuarioId: u.id, acao: 'criar_pet', entidade: 'pets', entidadeId: petId, depois: { codigo: codPet, tutor_id: tutorId, nome: pet.nome, especie: pet.especie, via: 'cadastro_rapido' }, ip });
-  return json({ tutor: tutorCompleto(await buscarTutor(env, tutorId)), pet: petCompleto(await lerPetPorId(env, petId)) }, 201);
+  const atendimento = await registrarEBuscarChegada(env, { chegada, petId, usuarioId: u.id, ip });
+  return json({ tutor: tutorCompleto(await buscarTutor(env, tutorId)), pet: petCompleto(await lerPetPorId(env, petId)), ...(atendimento ? { atendimento } : {}) }, 201);
 }
 
 // ---------- juntar cadastros duplicados ----------
@@ -438,6 +474,20 @@ const PETS_TESTE = `SELECT id FROM pets WHERE ${ONDE_TUTOR_TESTE} OR tutor_id IN
 const ATEND_TESTE = `SELECT id FROM atendimentos WHERE pet_id IN (${PETS_TESTE})`;
 const PEDIDOS_TESTE = `SELECT id FROM pedidos WHERE atendimento_id IN (${ATEND_TESTE})`;
 
+// Fotos que só os dados de teste usam (se algum cadastro real usa a foto, ela fica).
+const FOTOS_TESTE = `
+  SELECT foto_id AS id FROM (
+    SELECT foto_id FROM atendimentos WHERE id IN (${ATEND_TESTE}) AND foto_id IS NOT NULL
+    UNION
+    SELECT foto_id FROM pets WHERE id IN (${PETS_TESTE}) AND foto_id IS NOT NULL)
+  WHERE foto_id NOT IN (SELECT foto_id FROM atendimentos WHERE foto_id IS NOT NULL AND id NOT IN (${ATEND_TESTE}))
+    AND foto_id NOT IN (SELECT foto_id FROM pets WHERE foto_id IS NOT NULL AND id NOT IN (${PETS_TESTE}))`;
+
+async function idsFotosTeste(env) {
+  const { results } = await env.DB.prepare(FOTOS_TESTE).all();
+  return results.map((r) => r.id);
+}
+
 async function contarDadosTeste(env) {
   const n = async (sql) => (await env.DB.prepare(sql).first()).n;
   return {
@@ -445,6 +495,7 @@ async function contarDadosTeste(env) {
     pets: await n(`SELECT COUNT(*) AS n FROM (${PETS_TESTE})`),
     atendimentos: await n(`SELECT COUNT(*) AS n FROM (${ATEND_TESTE})`),
     pedidos: await n(`SELECT COUNT(*) AS n FROM (${PEDIDOS_TESTE})`),
+    fotos: (await idsFotosTeste(env)).length,
   };
 }
 
@@ -465,6 +516,7 @@ async function dadosTesteApagar(request, env) {
   if (preso.n > 0) throw new ErroHttp(409, 'Há cadastros reais unidos a um cadastro de teste. Desfaça isso antes de apagar.');
 
   const contagem = await contarDadosTeste(env);
+  const fotos = await idsFotosTeste(env); // guardadas antes, pois depois da exclusão não dá mais para saber
   // Ordem segura (de quem depende para quem é dependido), tudo de uma vez.
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM pagamentos WHERE pedido_id IN (${PEDIDOS_TESTE})`),
@@ -473,6 +525,8 @@ async function dadosTesteApagar(request, env) {
     env.DB.prepare(`DELETE FROM atendimentos WHERE id IN (${ATEND_TESTE})`),
     env.DB.prepare(`DELETE FROM pets WHERE id IN (${PETS_TESTE})`),
     env.DB.prepare(`DELETE FROM tutores WHERE ${ONDE_TUTOR_TESTE}`),
+    // Fotos por último (os atendimentos e pets que apontavam para elas já foram apagados).
+    ...fotos.map((id) => env.DB.prepare('DELETE FROM fotos WHERE id = ?').bind(id)),
     prepararAcao(env, { usuarioId: adm.id, acao: 'apagar_dados_teste', entidade: 'tutores', depois: contagem, ip: ipDe(request) }),
   ]);
   return json({ apagados: contagem });

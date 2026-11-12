@@ -7,6 +7,8 @@ import {
 } from './auth.js';
 import { ErroHttp, agoraISO, comparacaoSegura, ipDe, json, lerJson, registrarAcao, texto } from './util.js';
 import { ROTAS_CADASTRO } from './cadastro.js';
+import { ROTAS_ATENDIMENTOS } from './atendimentos.js';
+import { ROTAS_FOTOS } from './fotos.js';
 
 const JANELA_MS = 15 * 60 * 1000; // 15 minutos
 const LIMITE_POR_LOGIN = 5;
@@ -210,6 +212,8 @@ const ROTAS = [
   ['POST', '/api/usuarios', usuariosCriar],
   ['PATCH', '/api/usuarios/:id', usuariosAlterar],
   ...ROTAS_CADASTRO,
+  ...ROTAS_ATENDIMENTOS,
+  ...ROTAS_FOTOS,
 ].map(([metodo, caminho, funcao]) => ({
   metodo, funcao,
   padrao: new RegExp('^' + caminho.replace(/:[a-z]+/g, '([^/]+)') + '/?$'),

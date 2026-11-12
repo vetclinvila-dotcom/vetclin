@@ -14,7 +14,8 @@ class Comando {
     this.args = args;
   }
   bind(...args) {
-    return new Comando(this.banco, this.sql, args);
+    // O D1 aceita ArrayBuffer para BLOB; o SQLite do Node quer Uint8Array.
+    return new Comando(this.banco, this.sql, args.map((a) => (a instanceof ArrayBuffer ? new Uint8Array(a) : a)));
   }
   async first() {
     return this.banco.prepare(this.sql).get(...this.args) ?? null;

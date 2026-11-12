@@ -25,7 +25,8 @@ function el(tag, atributos = {}, ...filhos) {
 }
 
 function mostrar(...elementos) {
-  raiz.replaceChildren(...elementos);
+  raiz.classList.remove('larga'); // só a tela Hoje usa a largura grande
+  raiz.replaceChildren(...elementos.filter((x) => x != null && x !== false)); // ignora vazios (senão apareceria o texto "null")
 }
 
 // Chama a API. Sempre envia o cabeçalho de segurança e os cookies.
@@ -44,6 +45,10 @@ async function api(metodo, caminho, corpo) {
   } catch {
     throw new Error('Sem conexão com o servidor. Verifique a internet e tente de novo.');
   }
+  return tratarResposta(resposta);
+}
+
+async function tratarResposta(resposta) {
   let dados = null;
   try { dados = await resposta.json(); } catch { /* resposta sem JSON */ }
   if (!resposta.ok) {
@@ -53,6 +58,21 @@ async function api(metodo, caminho, corpo) {
     throw e;
   }
   return dados;
+}
+
+// Envia uma foto (bytes crus, JPEG). Devolve { id }.
+async function enviarFotoArquivo(blob) {
+  let resposta;
+  try {
+    resposta = await fetch('/api/fotos', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'vetclin', 'Content-Type': blob.type || 'image/jpeg' },
+      body: blob,
+    });
+  } catch {
+    throw new Error('Sem conexão com o servidor. Verifique a internet e tente de novo.');
+  }
+  return tratarResposta(resposta);
 }
 
 function caixaMensagem(tipo, texto) {
@@ -155,7 +175,60 @@ function formatarDataHora(iso) {
   return d.toLocaleString('pt-BR', { timeZone: 'America/Bahia', dateStyle: 'short', timeStyle: 'short' });
 }
 
+const FORMATO_HORA = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Bahia', hour: '2-digit', minute: '2-digit' });
+const FORMATO_DIA = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Bahia', day: '2-digit', month: '2-digit', year: 'numeric' });
+
+// Hora (HH:MM) no fuso da clínica.
+function formatarHora(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : FORMATO_HORA.format(d);
+}
+
+function formatarDia(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : FORMATO_DIA.format(d);
+}
+
+// 12.4 -> "12,4 kg"
+function formatarPeso(kg) {
+  return `${Number(kg).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} kg`;
+}
+
+// Peso digitado ("12,4" ou "12.4"). Devolve número, ou null se estiver vazio. Erro de verdade se for inválido.
+function lerPesoDigitado(texto) {
+  const t = String(texto ?? '').trim().replace(',', '.');
+  if (!t) return null;
+  const n = /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
+  if (!(n >= 0.01 && n <= 150)) throw new Error('O peso deve estar entre 0,01 e 150 kg. Exemplo: 12,4');
+  return Math.round(n * 100) / 100;
+}
+
+// Texto da espera: "15 min" ou "1 h 05 min".
+function formatarEspera(min) {
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+}
+
+// Minutos de espera calculados aqui na tela (assim o número anda sozinho a cada minuto).
+function esperaDe(a) {
+  const fim = a.iniciado_em ? Date.parse(a.iniciado_em) : Date.now();
+  return Math.max(0, Math.floor((fim - Date.parse(a.chegada_em)) / 60000));
+}
+
+function idadeCurta(p) {
+  const partes = [];
+  if (p.idade_anos != null) partes.push(`${p.idade_anos} ${p.idade_anos === 1 ? 'ano' : 'anos'}`);
+  if (p.idade_meses != null) partes.push(`${p.idade_meses} ${p.idade_meses === 1 ? 'mês' : 'meses'}`);
+  return partes.join(' e ');
+}
+
 // ---------- peças de tela ----------
+
+// Foto do pet (ou a inicial do nome, se não houver foto).
+function miniatura(fotoId, nome, classe = 'miniatura') {
+  if (fotoId) return el('img', { class: classe, src: `/api/fotos/${fotoId}`, alt: `Foto de ${nome}`, loading: 'lazy' });
+  return el('div', { class: classe + ' sem-foto', 'aria-hidden': 'true' }, (nome || '?').trim().charAt(0).toUpperCase());
+}
+
 function carregando() {
   mostrar(el('p', { class: 'carregando' }, 'Carregando…'));
 }
@@ -215,36 +288,346 @@ function confirmar(titulo, texto, rotuloOk) {
   });
 }
 
+// Janela com um campo para preencher (ex.: motivo do cancelamento, peso).
+// "aoConfirmar(valor)" pode lançar erro: a mensagem aparece na janela e ela continua aberta.
+function dialogoCampo({ titulo, texto = null, rotulo, rotuloOk, tipo = 'texto', inicial = '', aoConfirmar }) {
+  return new Promise((resolve) => {
+    const entrada = tipo === 'peso'
+      ? el('input', { id: 'dialogo-campo', class: 'peso-entrada', type: 'text', inputmode: 'decimal', placeholder: 'ex.: 12,4', autocomplete: 'off', value: inicial })
+      : el('input', { id: 'dialogo-campo', type: 'text', maxlength: 200, autocomplete: 'off', value: inicial });
+    const area = el('div');
+    const ok = el('button', { type: 'button', id: 'dialogo-ok' }, rotuloOk);
+    const d = el('dialog', { class: 'confirmacao' },
+      el('h2', {}, titulo),
+      texto ? el('p', {}, texto) : null,
+      el('label', { for: 'dialogo-campo' }, rotulo), entrada, area,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'dialogo-voltar' }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    ok.addEventListener('click', async () => {
+      area.replaceChildren();
+      ok.disabled = true;
+      try { await aoConfirmar(entrada.value); fechar(true); } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    entrada.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); ok.click(); } });
+    d.querySelector('#dialogo-voltar').addEventListener('click', () => fechar(false));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
+    document.body.append(d);
+    d.showModal();
+    entrada.focus();
+  });
+}
+
+// Reduz a foto no aparelho: no máximo 1024 px no lado maior, JPEG com qualidade 0,75.
+async function reduzirFoto(arquivo) {
+  let imagem;
+  try {
+    imagem = await createImageBitmap(arquivo, { imageOrientation: 'from-image' }); // já gira certo
+  } catch {
+    imagem = await new Promise((ok, falha) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => falha(new Error('Não foi possível ler esta foto. Tente outra.'));
+      i.src = URL.createObjectURL(arquivo);
+    });
+  }
+  const largura = imagem.width || imagem.naturalWidth;
+  const altura = imagem.height || imagem.naturalHeight;
+  const escala = Math.min(1, 1024 / Math.max(largura, altura));
+  const tela = document.createElement('canvas');
+  tela.width = Math.max(1, Math.round(largura * escala));
+  tela.height = Math.max(1, Math.round(altura * escala));
+  tela.getContext('2d').drawImage(imagem, 0, 0, tela.width, tela.height);
+  if (imagem.close) imagem.close();
+  const blob = await new Promise((ok) => tela.toBlob(ok, 'image/jpeg', 0.75));
+  if (!blob) throw new Error('Não foi possível preparar a foto. Tente outra.');
+  return blob;
+}
+
+// Campo de foto: tirar foto (câmera) ou escolher da galeria, com miniatura e "Remover foto".
+// "inicial" = id de uma foto que já existe. Devolve { caixa, mudou(), resolver() }.
+function campoFoto(inicial = null, nomePet = 'pet') {
+  let fotoId = inicial;        // foto já guardada no servidor
+  let blob = null;             // foto nova, ainda não enviada
+  let urlPrevia = null;
+  let mudou = false;
+  const previa = el('div', { class: 'foto-previa' });
+  const erro = el('div');
+  const camera = el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'escondido', id: 'foto-camera', 'aria-label': 'Tirar foto' });
+  const galeria = el('input', { type: 'file', accept: 'image/*', class: 'escondido', id: 'foto-galeria', 'aria-label': 'Escolher foto da galeria' });
+  const desenhar = () => {
+    previa.replaceChildren();
+    if (urlPrevia || fotoId) {
+      previa.append(
+        el('img', { class: 'foto-grande', src: urlPrevia || `/api/fotos/${fotoId}`, alt: `Foto de ${nomePet}` }),
+        el('button', { type: 'button', class: 'secundario', id: 'foto-remover', onclick: () => {
+          if (urlPrevia) URL.revokeObjectURL(urlPrevia);
+          urlPrevia = null; blob = null; fotoId = null; mudou = true; desenhar();
+        } }, 'Remover foto'));
+    }
+  };
+  async function escolher(ev) {
+    const arquivo = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (!arquivo) return;
+    erro.replaceChildren();
+    try {
+      blob = await reduzirFoto(arquivo);
+      if (urlPrevia) URL.revokeObjectURL(urlPrevia);
+      urlPrevia = URL.createObjectURL(blob);
+      fotoId = null; mudou = true;
+      desenhar();
+    } catch (e) { erro.replaceChildren(caixaMensagem('erro', e.message)); }
+  }
+  camera.addEventListener('change', escolher);
+  galeria.addEventListener('change', escolher);
+  desenhar();
+  const caixa = el('div', { class: 'campo-foto' },
+    el('label', {}, 'Foto (opcional)'),
+    el('div', { class: 'acoes' },
+      el('button', { type: 'button', class: 'secundario', id: 'foto-tirar', onclick: () => camera.click() }, 'Tirar foto'),
+      el('button', { type: 'button', class: 'secundario', id: 'foto-galeria-botao', onclick: () => galeria.click() }, 'Escolher da galeria')),
+    camera, galeria, previa, erro);
+  return {
+    caixa,
+    mudou: () => mudou,
+    // Envia a foto nova (se houver) e devolve o id (ou null, se não tem foto).
+    async resolver() {
+      if (blob) {
+        const r = await enviarFotoArquivo(blob);
+        fotoId = r.id; blob = null; // se algo falhar depois, não envia de novo
+      }
+      return fotoId;
+    },
+  };
+}
+
+// Escolha "Normal" / "URGENTE" (dois botões grandes).
+function escolhaUrgencia(inicial = false) {
+  let urgente = !!inicial;
+  const normal = el('button', { type: 'button', class: 'opcao', role: 'radio', id: 'urgencia-normal' }, 'Normal');
+  const forte = el('button', { type: 'button', class: 'opcao urgente', role: 'radio', id: 'urgencia-urgente' }, 'URGENTE');
+  const marcar = () => { normal.setAttribute('aria-checked', String(!urgente)); forte.setAttribute('aria-checked', String(urgente)); };
+  normal.addEventListener('click', () => { urgente = false; marcar(); });
+  forte.addEventListener('click', () => { urgente = true; marcar(); });
+  marcar();
+  return { caixa: el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': 'Urgência' }, normal, forte), valor: () => urgente };
+}
+
+// Campos de uma chegada. O PESO vem primeiro e é o maior campo da tela.
+// Devolve partes separadas, porque o cadastro rápido põe o peso no meio do formulário:
+//   peso (nós da tela), resto (motivo, urgência, foto) e coletar() -> dados prontos para a API.
+function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgente = false, fotoInicial = null, permitirPesarDepois = true } = {}) {
+  let pesarDepois = false;
+  const peso = el('input', {
+    id: 'peso_kg', name: 'peso_kg', class: 'peso-entrada', type: 'text', inputmode: 'decimal', placeholder: 'ex.: 12,4',
+    autocomplete: 'off', 'aria-label': 'Peso em quilos', value: pesoInicial != null ? String(pesoInicial).replace('.', ',') : '',
+  });
+  const depois = el('button', { type: 'button', class: 'secundario', id: 'pesar-depois', 'aria-pressed': 'false' }, 'Pesar depois');
+  const aviso = el('p', { class: 'aviso-peso', hidden: true }, 'Sem peso por enquanto. O cartão ficará marcado como "Sem peso" até alguém informar.');
+  depois.addEventListener('click', () => {
+    pesarDepois = !pesarDepois;
+    depois.setAttribute('aria-pressed', String(pesarDepois));
+    depois.textContent = pesarDepois ? 'Pesar depois (marcado)' : 'Pesar depois';
+    peso.disabled = pesarDepois;
+    if (pesarDepois) peso.value = '';
+    aviso.hidden = !pesarDepois;
+    if (!pesarDepois) peso.focus();
+  });
+  const motivoCampo = el('textarea', { id: 'motivo', name: 'motivo', rows: 2, maxlength: 200, placeholder: 'ex.: vômito desde ontem' }, motivo);
+  const urgencia = escolhaUrgencia(urgente);
+  const foto = campoFoto(fotoInicial, nomePet);
+  return {
+    peso: [
+      el('label', { for: 'peso_kg', class: 'rotulo-peso' }, 'Peso (kg)'),
+      peso,
+      permitirPesarDepois ? el('div', { class: 'linha-pesar-depois' }, depois) : null,
+      aviso,
+    ],
+    resto: [
+      el('label', { for: 'motivo' }, 'Motivo da vinda'), motivoCampo,
+      el('label', {}, 'Urgência'), urgencia.caixa,
+      foto.caixa,
+    ],
+    foto,
+    pesoCampo: peso,
+    // Confere tudo e envia a foto (se houver). Lança erro com mensagem em português.
+    async coletar() {
+      const kg = pesarDepois ? null : lerPesoDigitado(peso.value);
+      if (kg === null && !pesarDepois) throw new Error('Informe o peso ou escolha "Pesar depois".');
+      const m = motivoCampo.value.trim();
+      if (!m) throw new Error('Preencha o motivo da vinda.');
+      return { peso_kg: kg, pesar_depois: pesarDepois, motivo: m, urgente: urgencia.valor(), foto_id: await foto.resolver() };
+    },
+  };
+}
+
 // ---------- Hoje ----------
+const PODE_ATENDER = ['veterinario', 'suporte']; // quem inicia e finaliza atendimentos
+
+// Janela rápida para informar o peso de quem ficou "Sem peso".
+async function adicionarPeso(a, aoAtualizar) {
+  const ok = await dialogoCampo({
+    titulo: `Peso de ${a.pet.nome}`, rotulo: 'Peso (kg)', rotuloOk: 'Salvar peso', tipo: 'peso',
+    aoConfirmar: async (valor) => {
+      const kg = lerPesoDigitado(valor);
+      if (kg === null) throw new Error('Informe o peso em kg. Exemplo: 12,4');
+      await api('PATCH', `/api/atendimentos/${a.id}`, { peso_kg: kg });
+    },
+  });
+  if (ok) aoAtualizar();
+}
+
+// Cartão de um paciente na tela Hoje.
+function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
+  const p = a.pet;
+  const abrirFicha = () => irPara(`#/pet/${p.id}`);
+  const idade = idadeCurta(p);
+  // Se chegou em outro dia (atendimento esquecido aberto), mostra a data também.
+  const quando = a.de_outro_dia ? `em ${formatarDia(a.chegada_em)} às ${formatarHora(a.chegada_em)}` : formatarHora(a.chegada_em);
+  const detalheHora = {
+    chegou: () => `Chegou ${quando} · espera ${formatarEspera(esperaDe(a))}`,
+    em_atendimento: () => `Chegou ${quando} · esperou ${formatarEspera(esperaDe(a))} · iniciou ${formatarHora(a.iniciado_em)}${a.veterinario ? ' com ' + a.veterinario.nome : ''}`,
+    finalizado: () => `Chegou ${formatarHora(a.chegada_em)} · finalizado ${formatarHora(a.finalizado_em)}${a.veterinario ? ' · ' + a.veterinario.nome : ''}`,
+  }[a.status];
+
+  const pesoNo = a.sem_peso
+    ? el('div', { class: 'peso-faltando' },
+      el('span', { class: 'selo-sem-peso' }, 'Sem peso'),
+      a.status === 'finalizado' ? null : el('button', { type: 'button', class: 'adicionar-peso', onclick: (ev) => { ev.stopPropagation(); adicionarPeso(a, aoAtualizar); } }, 'Adicionar peso'))
+    : el('div', { class: 'peso-grande' }, formatarPeso(a.peso_kg));
+
+  const corpo = el('div', { class: 'atend-corpo', role: 'link', tabindex: '0', 'aria-label': `Abrir ficha de ${p.nome}`, onclick: abrirFicha },
+    miniatura(p.foto_id || a.foto_id, p.nome),
+    el('div', { class: 'atend-info' },
+      el('div', { class: 'atend-nome' }, p.nome, a.urgente ? el('span', { class: 'selo-urgente' }, 'URGENTE') : null),
+      el('div', { class: 'suave' }, [ROTULO_ESPECIE[p.especie] || p.especie, idade].filter(Boolean).join(' · ')),
+      pesoNo,
+      a.motivo ? el('div', { class: 'atend-motivo' }, a.motivo) : null,
+      el('div', { class: 'suave' }, `Tutor: ${a.tutor.nome}${a.tutor.final_telefone ? ' · final ' + a.tutor.final_telefone : ''}`),
+      el('div', { class: 'suave atend-hora' }, detalheHora())));
+  corpo.addEventListener('keydown', (ev) => { if (ev.target === corpo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFicha(); } });
+
+  // Roda uma ação (chamada à API) e atualiza a lista.
+  const rodar = (botao, funcao) => async () => {
+    botao.disabled = true;
+    try { await funcao(); await aoAtualizar(); } catch (e) { botao.disabled = false; await aoAtualizar(); aoErro(e); }
+  };
+  const botoes = [];
+  if (a.status === 'chegou' && PODE_ATENDER.includes(usuario.papel)) {
+    const b = el('button', { type: 'button', class: 'iniciar' }, 'Iniciar atendimento');
+    b.addEventListener('click', rodar(b, () => api('POST', `/api/atendimentos/${a.id}/iniciar`)));
+    botoes.push(b);
+  }
+  if (a.status === 'em_atendimento' && PODE_ATENDER.includes(usuario.papel)) {
+    const b = el('button', { type: 'button', class: 'finalizar' }, 'Finalizar');
+    b.addEventListener('click', async () => {
+      if (await confirmar(`Finalizar o atendimento de ${p.nome}?`, 'Depois de finalizado, ele sai da lista de atendimentos em andamento.', 'Sim, finalizar')) {
+        rodar(b, () => api('POST', `/api/atendimentos/${a.id}/finalizar`))();
+      }
+    });
+    botoes.push(b);
+  }
+  if (a.status === 'chegou' || a.status === 'em_atendimento') {
+    botoes.push(el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/atendimento/${a.id}/editar`) }, 'Editar'));
+  }
+  if (a.status === 'chegou') {
+    botoes.push(el('button', { type: 'button', class: 'secundario perigo', onclick: async () => {
+      const feito = await dialogoCampo({
+        titulo: `Cancelar a chegada de ${p.nome}?`, texto: 'Ele sai da fila de espera. Conte o motivo:', rotulo: 'Motivo do cancelamento', rotuloOk: 'Sim, cancelar chegada',
+        aoConfirmar: async (motivo) => {
+          if (!motivo.trim()) throw new Error('Preencha o motivo do cancelamento.');
+          await api('POST', `/api/atendimentos/${a.id}/cancelar`, { motivo: motivo.trim() });
+        },
+      });
+      if (feito) aoAtualizar();
+    } }, 'Cancelar chegada'));
+  }
+  return el('article', { class: 'cartao atend ' + a.status + (a.urgente ? ' urgente' : '') }, corpo, botoes.length ? el('div', { class: 'acoes atend-acoes' }, botoes) : null);
+}
+
 function telaHoje() {
+  const minha = versaoTela;
+  let dados = null;
+  let finalizadosAberto = false;
+  const avisos = el('div');
+  const listas = el('div', { class: 'hoje-grade' }, el('p', { class: 'carregando' }, 'Carregando…'));
   mostrar(
     cabecalho(),
-    el('h1', {}, `Olá, ${usuario.nome}`),
+    el('h1', {}, 'Hoje'),
     el('div', { class: 'acoes-grandes' },
-      el('button', { type: 'button', class: 'grande', onclick: () => irPara('#/busca') }, 'Buscar paciente'),
-      el('button', { type: 'button', class: 'grande', onclick: () => irPara('#/cadastro') }, 'Cadastro rápido'),
+      el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/busca?modo=chegada') }, 'Registrar chegada'),
+      el('button', { type: 'button', class: 'grande secundario', id: 'cadastro-rapido', onclick: () => irPara('#/cadastro') }, 'Cadastro rápido'),
     ),
-    el('div', { class: 'cartao' },
-      el('p', {}, el('span', { class: 'etiqueta' }, NOME_PAPEL[usuario.papel] || usuario.papel), usuario.admin ? el('span', { class: 'etiqueta' }, 'Administrador') : null),
-      el('h2', {}, 'Hoje'),
-      el('p', { class: 'suave' }, 'Aqui aparecerão os atendimentos do dia. Esta tela será construída nos próximos passos.'),
-    ),
+    avisos, listas,
+    el('p', { class: 'suave' }, el('span', { class: 'etiqueta' }, NOME_PAPEL[usuario.papel] || usuario.papel), usuario.admin ? el('span', { class: 'etiqueta' }, 'Administrador') : null, usuario.nome),
     usuario.admin ? el('div', { class: 'acoes' }, el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/usuarios') }, 'Usuários')) : null,
   );
+
+  raiz.classList.add('larga');
+
+  function secao(classe, titulo, itens, vazio) {
+    return el('section', { class: 'secao-hoje ' + classe },
+      el('h2', { class: 'secao-titulo' }, titulo, el('span', { class: 'contador' }, String(itens.length))),
+      itens.length ? itens.map((a) => cartaoAtendimento(a, { aoAtualizar: atualizar, aoErro: (e) => avisos.replaceChildren(caixaMensagem('erro', e.message)) })) : el('p', { class: 'suave vazio-secao' }, vazio));
+  }
+
+  function desenhar() {
+    if (!dados) return;
+    const total = dados.aguardando.length + dados.em_atendimento.length + dados.finalizados.length + dados.cancelados_hoje;
+    const finais = el('details', { class: 'secao-hoje finalizados', open: finalizadosAberto },
+      el('summary', { class: 'secao-titulo' }, 'Finalizados hoje', el('span', { class: 'contador' }, String(dados.finalizados.length))),
+      dados.finalizados.length
+        ? dados.finalizados.map((a) => cartaoAtendimento(a, { aoAtualizar: atualizar, aoErro: () => {} }))
+        : el('p', { class: 'suave vazio-secao' }, 'Nenhum atendimento finalizado hoje ainda.'));
+    finais.addEventListener('toggle', () => { finalizadosAberto = finais.open; });
+    listas.replaceChildren(...[
+      total === 0 ? el('div', { class: 'cartao vazio' }, el('p', {}, 'Nenhuma chegada registrada hoje ainda.'), el('p', { class: 'suave' }, 'Quando um paciente chegar, toque em "Registrar chegada".')) : null,
+      secao('aguardando', 'Aguardando', dados.aguardando, 'Ninguém aguardando no momento.'),
+      secao('em-atendimento', 'Em atendimento', dados.em_atendimento, 'Nenhum atendimento em andamento.'),
+      finais,
+      dados.cancelados_hoje ? el('p', { class: 'suave' }, `Chegadas canceladas hoje: ${dados.cancelados_hoje}`) : null,
+    ].filter(Boolean)); // (replaceChildren transformaria null em o texto "null")
+  }
+
+  async function atualizar() {
+    if (minha !== versaoTela) return;
+    try {
+      const novo = await api('GET', '/api/hoje');
+      if (minha !== versaoTela) return;
+      dados = novo;
+      avisos.replaceChildren();
+      desenhar();
+    } catch (e) {
+      if (minha !== versaoTela) return;
+      if (e.status === 401) { usuario = null; telaEntrar(); return; }
+      avisos.replaceChildren(caixaMensagem('erro', e.message));
+    }
+  }
+
+  // Atualiza a cada 20 s (se a tela estiver visível) e redesenha a cada minuto (só a espera muda).
+  const parar = () => minha !== versaoTela;
+  const t20 = setInterval(() => { if (parar()) { clearInterval(t20); return; } if (document.visibilityState === 'visible') atualizar(); }, 20000);
+  const t60 = setInterval(() => { if (parar()) { clearInterval(t60); return; } desenhar(); }, 60000);
+  const aoVoltar = () => { if (parar()) { document.removeEventListener('visibilitychange', aoVoltar); return; } if (document.visibilityState === 'visible') atualizar(); };
+  document.addEventListener('visibilitychange', aoVoltar);
+  atualizar();
 }
 
 // ---------- Busca ----------
-function telaBusca(qInicial = '') {
+function telaBusca(qInicial = '', modo = '') {
+  const chegada = modo === 'chegada'; // toque no resultado abre o formulário de chegada
   const campoBusca = el('input', { id: 'q', type: 'search', class: 'busca-grande', placeholder: 'Nome do pet, do tutor ou telefone', autocomplete: 'off', value: qInicial, 'aria-label': 'Nome do pet, do tutor ou telefone' });
   const area = el('div', { id: 'resultados' });
-  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Buscar paciente'), campoBusca, area);
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, chegada ? 'Registrar chegada' : 'Buscar paciente'),
+    chegada ? el('p', { class: 'suave' }, 'Busque o paciente que chegou e toque nele.') : null, campoBusca, area);
 
   let tempo = null;
   let numero = 0; // ignora respostas antigas
   async function buscarAgora() {
     const q = campoBusca.value.trim();
     // Guarda o texto no endereço (sem criar passo novo no "voltar").
-    history.replaceState(null, '', q ? `#/busca?q=${encodeURIComponent(q)}` : '#/busca');
+    const sufixo = chegada ? '&modo=chegada' : '';
+    history.replaceState(null, '', q ? `#/busca?q=${encodeURIComponent(q)}${sufixo}` : (chegada ? '#/busca?modo=chegada' : '#/busca'));
     const meu = ++numero;
     if (q.length < 2) {
       area.replaceChildren(el('p', { class: 'suave' }, 'Digite pelo menos 2 letras ou 4 números do telefone.'));
@@ -258,10 +641,10 @@ function telaBusca(qInicial = '') {
         area.replaceChildren(
           el('div', { class: 'cartao vazio' },
             el('p', {}, 'Nenhum paciente encontrado.'),
-            el('button', { type: 'button', onclick: () => irPara('#/cadastro') }, 'Cadastrar novo')));
+            el('button', { type: 'button', onclick: () => irPara('#/cadastro') }, 'Cadastrar novo (cadastro rápido)')));
         return;
       }
-      area.replaceChildren(...resultados.map(cartaoResultado));
+      area.replaceChildren(...resultados.map((r) => cartaoResultado(r, chegada)));
     } catch (e) {
       if (meu === numero) area.replaceChildren(caixaMensagem('erro', e.message));
     }
@@ -271,10 +654,10 @@ function telaBusca(qInicial = '') {
   campoBusca.focus();
 }
 
-function cartaoResultado(r) {
+function cartaoResultado(r, chegada = false) {
   const tutor = `Tutor: ${r.tutor.nome}${r.tutor.final_telefone ? ' · final ' + r.tutor.final_telefone : ''}`;
   if (r.tipo === 'pet') {
-    return el('button', { type: 'button', class: 'resultado', onclick: () => irPara(`#/pet/${r.pet.id}`) },
+    return el('button', { type: 'button', class: 'resultado', onclick: () => irPara(chegada ? `#/chegada/${r.pet.id}` : `#/pet/${r.pet.id}`) },
       el('strong', { class: 'resultado-nome' }, r.pet.nome),
       el('span', {}, ROTULO_ESPECIE[r.pet.especie] || r.pet.especie),
       el('span', { class: 'suave' }, tutor),
@@ -292,11 +675,20 @@ function telaCadastro() {
   const especie = escolhaEspecie('');
   const area = el('div');
   const botao = el('button', { type: 'submit' }, 'Cadastrar');
+  const chegadaCampos = camposChegada({ nomePet: 'pet' });
+  // Chave "Chegada agora": ligada = registra também o atendimento (peso, motivo, urgência, foto).
+  const chave = el('input', { type: 'checkbox', id: 'chegada_agora', name: 'chegada_agora', checked: true });
+  const blocoPeso = el('div', { class: 'bloco-chegada' }, ...chegadaCampos.peso);
+  const blocoResto = el('div', { class: 'bloco-chegada' }, ...chegadaCampos.resto);
+  chave.addEventListener('change', () => { blocoPeso.hidden = blocoResto.hidden = !chave.checked; });
   const f = el('form', { novalidate: true },
     ...campo('Nome do pet', 'pet_nome', { required: true, autocomplete: 'off' }),
     el('label', {}, 'Espécie'), especie.caixa,
+    el('label', { class: 'linha chave-chegada' }, chave, 'Chegada agora (registrar peso e motivo)'),
+    blocoPeso,
     ...campo('Nome do tutor', 'tutor_nome', { required: true, autocomplete: 'off' }),
     ...campo('WhatsApp do tutor', 'whatsapp', { type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off', required: true }),
+    blocoResto,
     area, botao);
 
   async function enviar(extra = {}) {
@@ -304,16 +696,22 @@ function telaCadastro() {
     botao.disabled = true;
     try {
       const v = (id) => f.querySelector('#' + id).value;
-      const r = await api('POST', '/api/cadastro-rapido', {
+      const corpo = {
         tutor: { nome: v('tutor_nome'), whatsapp: v('whatsapp') },
         pet: { nome: v('pet_nome'), especie: especie.valor() || undefined },
         ...extra,
-      });
-      irPara(`#/pet/${r.pet.id}`);
+      };
+      if (chave.checked) corpo.chegada = await chegadaCampos.coletar(); // confere peso/motivo e envia a foto
+      const r = await api('POST', '/api/cadastro-rapido', corpo);
+      irPara(chave.checked ? '#/hoje' : `#/pet/${r.pet.id}`);
     } catch (e) {
       botao.disabled = false;
-      if (e.status === 409 && e.dados && e.dados.duplicados) area.replaceChildren(cartaoDuplicado(e.dados, extra, enviar));
-      else area.replaceChildren(caixaMensagem('erro', e.message));
+      botao.hidden = false;
+      if (e.status === 409 && e.dados && e.dados.duplicados) {
+        // Enquanto o aviso de repetido está na tela, só as opções do aviso valem.
+        botao.hidden = true;
+        area.replaceChildren(cartaoDuplicado(e.dados, extra, enviar, () => { area.replaceChildren(); botao.hidden = false; }));
+      } else area.replaceChildren(caixaMensagem('erro', e.message));
     }
   }
   f.addEventListener('submit', (ev) => {
@@ -325,14 +723,17 @@ function telaCadastro() {
 }
 
 // Cartão mostrado quando a API avisa de cadastro repetido (WhatsApp ou pet).
-function cartaoDuplicado(dados, extra, reenviar) {
+// "aoVoltar" (opcional) desfaz o aviso para a pessoa corrigir os dados.
+function cartaoDuplicado(dados, extra, reenviar, aoVoltar = null) {
+  const voltar = aoVoltar ? el('button', { type: 'button', class: 'secundario', onclick: aoVoltar }, 'Voltar e corrigir os dados') : null;
   if (dados.tipo === 'pet') {
     const d = dados.duplicados[0];
     return el('div', { class: 'cartao aviso' },
       el('h2', {}, `Este tutor já tem um pet chamado ${d.nome}`),
       el('div', { class: 'acoes' },
         el('button', { type: 'button', onclick: () => irPara(`#/pet/${d.id}`) }, 'Abrir a ficha existente'),
-        el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ ...extra, confirmar_duplicado: true }) }, 'Cadastrar mesmo assim')));
+        el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ ...extra, confirmar_duplicado: true }) }, 'Cadastrar mesmo assim'),
+        voltar));
   }
   return el('div', { class: 'cartao aviso' },
     el('h2', {}, 'Já existe cadastro com este WhatsApp'),
@@ -340,7 +741,90 @@ function cartaoDuplicado(dados, extra, reenviar) {
       el('strong', {}, t.nome), el('span', { class: 'suave' }, ` · final ${t.final_telefone} · ${t.codigo}`),
       el('p', { class: 'suave' }, t.pets.length ? 'Pets: ' + t.pets.map((p) => `${p.nome} (${ROTULO_ESPECIE[p.especie] || p.especie})`).join(', ') : 'Nenhum pet cadastrado.'),
       el('button', { type: 'button', onclick: () => reenviar({ tutor_existente_id: t.id }) }, 'Sim, é esta pessoa — adicionar o pet aqui'))),
-    el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ confirmar_duplicado: true }) }, 'Não, é outra pessoa da família — criar novo cadastro'));
+    el('button', { type: 'button', class: 'secundario', onclick: () => reenviar({ confirmar_duplicado: true }) }, 'Não, é outra pessoa da família — criar novo cadastro'),
+    voltar);
+}
+
+// ---------- Registrar chegada (pet que já tem cadastro) ----------
+async function telaChegada(petId) {
+  const minha = versaoTela;
+  carregando();
+  let d;
+  try { d = await api('GET', `/api/pets/${petId}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/busca?modo=chegada'); return; }
+  if (minha !== versaoTela) return;
+  const { pet, tutor, atendimento_aberto: aberto } = d;
+  const cabecaPet = el('div', { class: 'cartao cabeca-chegada' },
+    miniatura(pet.foto_id, pet.nome),
+    el('div', {}, el('div', { class: 'atend-nome' }, pet.nome),
+      el('div', { class: 'suave' }, [ROTULO_ESPECIE[pet.especie] || pet.especie, idadeCurta(pet)].filter(Boolean).join(' · ')),
+      el('div', { class: 'suave' }, `Tutor: ${tutor.nome}${tutor.final_telefone ? ' · final ' + tutor.final_telefone : ''}`)));
+  const jaNaClinica = () => el('div', { class: 'cartao aviso' },
+    el('h2', {}, 'Este pet já está na clínica.'),
+    el('p', {}, 'Já existe um atendimento aberto para ele. Veja na tela Hoje.'),
+    el('button', { type: 'button', id: 'ir-hoje', onclick: () => irPara('#/hoje') }, 'Ir para Hoje'));
+  if (aberto) {
+    mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Registrar chegada'), cabecaPet, jaNaClinica());
+    return;
+  }
+  const campos = camposChegada({ nomePet: pet.nome });
+  const area = el('div');
+  const botao = el('button', { type: 'submit' }, 'Registrar chegada');
+  const f = el('form', { novalidate: true }, ...campos.peso, ...campos.resto, area, botao);
+  f.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    area.replaceChildren();
+    botao.disabled = true;
+    try {
+      await api('POST', '/api/atendimentos', { pet_id: pet.id, ...(await campos.coletar()) });
+      irPara('#/hoje');
+    } catch (e) {
+      botao.disabled = false;
+      if (e.status === 409 && e.dados && e.dados.atendimento_id) { botao.hidden = true; area.replaceChildren(jaNaClinica()); }
+      else area.replaceChildren(caixaMensagem('erro', e.message));
+    }
+  });
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Registrar chegada'), cabecaPet, el('div', { class: 'cartao' }, f));
+  campos.pesoCampo.focus();
+}
+
+// ---------- Editar atendimento em aberto (peso, motivo, urgência, foto) ----------
+async function telaEditarAtendimento(id) {
+  const minha = versaoTela;
+  carregando();
+  let a;
+  try { a = await api('GET', `/api/atendimentos/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  if (a.status !== 'chegou' && a.status !== 'em_atendimento') {
+    mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, a.pet.nome), caixaMensagem('erro', 'Este atendimento já foi encerrado e não pode mais ser alterado.'));
+    return;
+  }
+  const campos = camposChegada({ nomePet: a.pet.nome, pesoInicial: a.peso_kg, motivo: a.motivo, urgente: a.urgente, fotoInicial: a.foto_id, permitirPesarDepois: false });
+  const area = el('div');
+  const botao = el('button', { type: 'submit' }, 'Salvar');
+  const f = el('form', { novalidate: true },
+    a.sem_peso ? el('p', { class: 'aviso-peso' }, 'Este paciente está sem peso. Informe abaixo, ou salve sem peso por enquanto.') : null,
+    ...campos.peso, ...campos.resto, area, botao);
+  f.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    area.replaceChildren();
+    botao.disabled = true;
+    try {
+      const kg = lerPesoDigitado(campos.pesoCampo.value);
+      const motivo = f.querySelector('#motivo').value.trim();
+      if (!motivo) throw new Error('Preencha o motivo da vinda.');
+      const corpo = { motivo, urgente: f.querySelector('#urgencia-urgente').getAttribute('aria-checked') === 'true' };
+      if (kg !== null) corpo.peso_kg = kg;
+      else if (!a.sem_peso) throw new Error('Informe o peso em kg.');
+      if (campos.foto.mudou()) corpo.foto_id = await campos.foto.resolver();
+      await api('PATCH', `/api/atendimentos/${id}`, corpo);
+      irPara('#/hoje');
+    } catch (e) {
+      botao.disabled = false;
+      area.replaceChildren(caixaMensagem('erro', e.message));
+    }
+  });
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, `Editar chegada de ${a.pet.nome}`),
+    el('p', { class: 'suave' }, `Tutor: ${a.tutor.nome}`), el('div', { class: 'cartao' }, f));
 }
 
 // ---------- Ficha do pet ----------
@@ -350,11 +834,21 @@ async function telaPet(id) {
   let d;
   try { d = await api('GET', `/api/pets/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/busca'); return; }
   if (minha !== versaoTela) return;
-  const { pet, tutor, atendimentos } = d;
+  const { pet, tutor, atendimentos, atendimento_aberto: aberto } = d;
   const linha = (rotulo, ...valor) => el('p', {}, el('span', { class: 'suave' }, rotulo + ': '), ...valor);
   mostrar(
     cabecalho(), botaoVoltar('#/busca', '← Buscar'),
-    el('h1', { class: 'nome-pet' }, pet.nome, pet.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Arquivado')),
+    el('div', { class: 'cabeca-ficha' },
+      miniatura(pet.foto_id, pet.nome, 'foto-ficha'),
+      el('h1', { class: 'nome-pet' }, pet.nome, pet.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Arquivado'))),
+    pet.ativo
+      ? (aberto
+        ? el('div', { class: 'cartao aviso' },
+          el('p', {}, el('strong', {}, 'Este pet já está na clínica.')),
+          el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', disabled: true }, 'Registrar chegada'),
+          el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/hoje') }, 'Ver em Hoje'))
+        : el('button', { type: 'button', class: 'grande bloco', id: 'registrar-chegada', onclick: () => irPara(`#/chegada/${pet.id}`) }, 'Registrar chegada'))
+      : null,
     el('div', { class: 'cartao' },
       linha('Espécie', ROTULO_ESPECIE[pet.especie] || pet.especie),
       linha('Raça', pet.raca || 'Não informada', pet.raca && !pet.raca_confirmada ? el('span', { class: 'etiqueta alerta' }, 'a confirmar') : null),
@@ -369,13 +863,17 @@ async function telaPet(id) {
       linha('WhatsApp', formatarTelefone(tutor.whatsapp)),
       el('p', {}, el('small', { class: 'suave' }, tutor.codigo)),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/tutor/${tutor.id}`) }, 'Abrir ficha do tutor')),
-    el('h2', {}, 'Atendimentos'),
+    el('h2', {}, 'Histórico de atendimentos e peso'),
     el('div', { class: 'cartao' },
       atendimentos.length
-        ? el('ul', { class: 'lista-simples' }, atendimentos.map((a) => el('li', {},
-          el('strong', {}, formatarDataHora(a.chegada_em)), ' ',
-          el('span', { class: 'etiqueta' }, ROTULO_STATUS[a.status] || a.status),
-          a.motivo ? el('div', { class: 'suave' }, a.motivo) : null)))
+        ? el('ul', { class: 'lista-simples historico' }, atendimentos.map((a) => el('li', {},
+          el('div', { class: 'hist-linha' },
+            el('strong', {}, formatarDia(a.chegada_em)),
+            a.sem_peso ? el('span', { class: 'selo-sem-peso pequeno' }, 'Sem peso') : el('span', { class: 'hist-peso' }, formatarPeso(a.peso_kg)),
+            a.urgente ? el('span', { class: 'selo-urgente' }, 'URGENTE') : null,
+            el('span', { class: 'etiqueta' }, ROTULO_STATUS[a.status] || a.status)),
+          a.motivo ? el('div', {}, a.motivo) : null,
+          a.veterinario ? el('div', { class: 'suave' }, `Veterinário(a): ${a.veterinario}`) : null)))
         : el('p', { class: 'suave' }, 'Nenhum atendimento ainda')),
   );
 }
@@ -603,13 +1101,13 @@ function secaoDadosTeste() {
           const r = await api('POST', '/api/admin/apagar-dados-teste', { confirmacao: entrada.value });
           const a = r.apagados;
           caixa.replaceChildren(el('h2', {}, 'Dados de teste'),
-            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos.`));
+            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos, ${a.fotos} fotos.`));
         } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
       });
       caixa.replaceChildren(
         el('h2', {}, 'Dados de teste'),
         el('p', {}, 'Apaga todos os tutores e pets cujo nome começa com TESTE, e os atendimentos deles.'),
-        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos.`)),
+        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos, ${c.fotos} fotos.`)),
         el('label', { for: 'confirmacao' }, 'Para confirmar, digite APAGAR'), entrada, area, el('div', { class: 'acoes' }, botao));
     } catch (e) { caixa.replaceChildren(el('h2', {}, 'Dados de teste'), caixaMensagem('erro', e.message)); }
   };
@@ -727,7 +1225,9 @@ function rotear() {
   const n = Number(partes[1]);
   const [rota, , acao] = partes;
   if (rota === 'hoje' || rota === '') return telaHoje();
-  if (rota === 'busca') return telaBusca(new URLSearchParams(consulta).get('q') || '');
+  if (rota === 'busca') { const qs = new URLSearchParams(consulta); return telaBusca(qs.get('q') || '', qs.get('modo') || ''); }
+  if (rota === 'chegada' && n) return telaChegada(n);
+  if (rota === 'atendimento' && n && acao === 'editar') return telaEditarAtendimento(n);
   if (rota === 'cadastro') return telaCadastro();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();
   if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n);
