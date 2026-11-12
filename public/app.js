@@ -4,7 +4,7 @@
 
 import { cartaoNotificacoes } from './notificacoes-app.js';
 import { itensDoTexto } from './produtos-receita.js';
-import { CAMPOS, VIAS, VIA_PADRAO, gruposDasLinhas, linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from './receita-linhas.js';
+import { CAMPOS, VIAS, VIA_PADRAO, gruposDasLinhas, linhaDaReceita, linhaVazia, linhasDoWhatsapp, nomeComDose, separarRemedioDose, textoDasLinhas } from './receita-linhas.js';
 import { MAX_VALOR_CENTAVOS, formatarReais, lerReais, reaisParaCampo } from './dinheiro.js';
 import { mascararChave, payloadPix, txidDoPedido } from './pix.js';
 import { qrParaSvg } from './qr.js';
@@ -2447,6 +2447,14 @@ function editorColunas(d, minha, aoMudar) {
     caixa,
     linhas: () => linhas.map((it) => ({ ...Object.fromEntries(CAMPOS_ENVIO.map((c) => [c, String(it[c] ?? '')])), aplicado: !!it.aplicado, ...(it.do_carrinho ? { do_carrinho: true } : {}), ...(it.catalogo_id ? { catalogo_id: it.catalogo_id } : {}) })),
     texto: () => textoDasLinhas(linhas),
+    // Recebe as linhas convertidas do WhatsApp: tira as linhas vazias e acrescenta as novas.
+    adicionarLinhas(novas) {
+      linhas = linhas.filter((it) => it.do_carrinho || linhaDaReceita(it));
+      for (const n of novas) linhas.push({ ...novaLinha(), ...n, viaOutro: eViaPropria(n.via) });
+      if (!linhas.length) linhas = [novaLinha()];
+      desenhar();
+      mudou();
+    },
     aoMudarTexto() {},
     salvarAgora,
     parar() { bloqueado = true; clearTimeout(tempo); },
@@ -2460,6 +2468,41 @@ function editorColunas(d, minha, aoMudar) {
 
 // Pergunta, uma vez por tentativa de liberar, o que fazer com produtos sem valor.
 // Devolve 'valor' (voltar e digitar) ou 'liberar' (seguir mesmo assim). Esc = voltar.
+// Caixa "Colar do WhatsApp": converte a mensagem em remédios nas colunas.
+function dialogoColarWhatsapp() {
+  return new Promise((resolve) => {
+    const area = el('textarea', { id: 'colar-whatsapp', rows: 10, placeholder: 'Cole aqui a mensagem da receita (ex.: Uso oral / 1 - Petsporin 300 mg / Administrar 1 comprimido a cada 12 horas, durante 7 dias.)' });
+    const previa = el('div', { class: 'suave', id: 'colar-previa' });
+    const ok = el('button', { type: 'button', id: 'colar-converter' }, 'Converter em receita');
+    const livre = el('button', { type: 'button', class: 'secundario', id: 'colar-texto-livre' }, 'Prefiro colar como texto livre');
+    const d = el('dialog', { class: 'confirmacao dialogo-colar' },
+      el('h2', {}, 'Colar receita do WhatsApp'),
+      el('p', {}, 'Cole a mensagem. Cada remédio vira uma linha nas colunas; confira antes de liberar.'),
+      el('label', { for: 'colar-whatsapp' }, 'Mensagem'), area, previa,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'colar-voltar' }, 'Voltar')),
+      el('div', { class: 'acoes' }, livre));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    const atualizar = () => {
+      const r = linhasDoWhatsapp(area.value);
+      previa.textContent = area.value.trim()
+        ? (r.linhas.length ? `Encontrei ${r.linhas.length} remédio(s): ${r.linhas.map((l) => nomeComDose(l.remedio, l.dose)).join(', ')}.` : 'Não encontrei remédios — confira o texto ou cole como texto livre.')
+        : '';
+    };
+    area.addEventListener('input', atualizar);
+    ok.addEventListener('click', () => {
+      const r = linhasDoWhatsapp(area.value);
+      if (!r.linhas.length) { previa.textContent = 'Não encontrei remédios — confira o texto ou use "Prefiro colar como texto livre".'; return; }
+      fechar(r);
+    });
+    livre.addEventListener('click', () => fechar({ textoLivre: true }));
+    d.querySelector('#colar-voltar').addEventListener('click', () => fechar(null));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(null); });
+    document.body.append(d);
+    d.showModal();
+    area.focus();
+  });
+}
+
 function dialogoSemValor(descricoes) {
   return new Promise((resolve) => {
     const d = el('dialog', { class: 'confirmacao', id: 'dialogo-sem-valor' },
@@ -2685,6 +2728,24 @@ async function telaReceita(id, consulta = '') {
   const alternarModo = el('button', { type: 'button', class: 'secundario', id: colunas ? 'modo-texto' : 'modo-colunas' }, colunas ? 'Colar do WhatsApp' : 'Usar colunas');
   alternarModo.addEventListener('click', comAviso(alternarModo, async () => {
     if (colunas) {
+      const r = await dialogoColarWhatsapp();
+      if (!r) return;
+      if (r.textoLivre) {
+        await salvarAgora();
+        await colunas.salvarAgora();
+        await api('PATCH', `/api/receitas/${id}`, { texto: colunas.texto(), linhas_json: null });
+        irPara(`#/receita/${id}?modo=texto${atend ? '&' + sufixoAtend : ''}`);
+        return;
+      }
+      colunas.adicionarLinhas(r.linhas);
+      if (r.orientacoes) {
+        orient.value = [orient.value.trim(), r.orientacoes].filter(Boolean).join('\n');
+        orient.dispatchEvent(new Event('input', { bubbles: true }));
+        const det = orient.closest('details'); if (det) det.open = true;
+      }
+      return;
+    }
+    if (false) { // (caminho antigo de colunas → texto livre: agora fica no botão 'Prefiro colar como texto livre')
       // O texto já está gerado: grava tudo e solta as colunas (a receita passa a ser só texto).
       await salvarAgora();
       await colunas.salvarAgora();

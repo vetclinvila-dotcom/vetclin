@@ -135,3 +135,128 @@ export function doseDaApresentacao(apresentacao) {
   const m = /(\d[\d.,]*\s?(?:mg|mcg|µg|g|ml|ui|%)(?:\s?\/\s?\w+)?)(?![\p{L}\d])/iu.exec(campo(apresentacao));
   return m ? m[1].replace(/\s+/g, ' ').trim() : '';
 }
+
+// ---------- Converter mensagem do WhatsApp em linhas (colunas) ----------
+// Entende o formato da clínica:
+//   Uso oral
+//   1 - Petsporin 300 mg            (____ 1 CX opcional no fim)
+//   Administrar 1 comprimido a cada 12 horas, durante 7 dias. Após refeições.
+// e variações comuns: "12/12h", "2x ao dia", "por 7 dias", "uso injetável", "1 cx".
+// O que não for entendido vai para "orientacoes" (não se perde).
+
+const RE_VIA = /^\s*uso\s+(oral|injet[aá]vel|t[oó]pico|otol[oó]gico|oft[aá]lmico|retal|nasal|inalat[oó]rio|subcut[aâ]neo|intramuscular|endovenoso)\s*:?\s*$/i;
+const NOMES_VIA = { oral: 'Uso oral', injetavel: 'Uso injetável', topico: 'Uso tópico', otologico: 'Uso otológico', oftalmico: 'Uso oftálmico' };
+const RE_VERBO = /^\s*(administrar|dar|aplicar|pingar|oferecer|usar|passar|tomar|fornecer|instilar|colocar|limpar)\b/i;
+const RE_DOSE = /(\d+(?:[.,]\d+)?(?:\s*\/\s*\d+(?:[.,]\d+)?)?\s*(?:mg\/kg|mg\/ml|mcg|mg|g|ml|ui|%))(?![a-z])/i;
+const RE_COMPRAR = /(?:[_.\-–—\s]{2,}|\s[-–—]\s|^)\s*(\d+\s*(?:cx|caixas?|fr|frascos?|un|unid(?:ades?)?|tubos?|bisnagas?|amp(?:olas?)?|blisters?|cartelas?)\.?)\s*$/i;
+
+function limparMarcas(t) {
+  return String(t ?? '')
+    .replace(/[​-‍﻿]/g, '')
+    .replace(/[*~]/g, '')
+    .replace(/(^|\s)_(\S)/g, '$1$2').replace(/(\S)_(\s|$)/g, '$1$2')
+    .trim();
+}
+function semAcento(t) { return t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
+function tirarNumeracao(t) { return t.replace(/^\s*(?:\d{1,2}\s*[-–—.)]\s*|[•·▪●-]\s+)/, '').trim(); }
+
+// "MEIO comprimido" → "meio comprimido"; tira "Administrar".
+function extrairComo(frase) {
+  const m = frase.match(/^\s*(?:administrar|dar|aplicar|pingar|oferecer|usar|passar|tomar|fornecer|instilar|colocar)\s+(.*?)(?=\s*(?:,\s|,$|\ba cada\b|\bde\s+\d+\s*(?:\/\s*\d+\s*)?(?:h|hs|horas?)\b|\d+\s*\/\s*\d+\s*h|\b\d+\s*x\b|\bpor\b|\bdurante\b|\.|$))/i);
+  if (!m) return '';
+  return m[1].trim().replace(/\b[A-ZÁÉÍÓÚÃÕÇ]{3,}\b/g, (w) => w.toLowerCase());
+}
+function extrairIntervalo(frase) {
+  let m = frase.match(/a cada\s+(\d+(?:[.,]\d+)?)\s*(?:h|hs|horas?)\b/i) || frase.match(/\bde\s+(\d+)\s*(?:em\s+\d+\s*)?(?:h|hs|horas?)\b/i) || frase.match(/\b(\d+)\s*\/\s*\d+\s*h/i);
+  if (m) return `${m[1].replace('.', ',')} h`;
+  m = frase.match(/\b(\d)\s*x\s*(?:ao|por)\s*dia\b/i) || frase.match(/\b(\d)\s*vez(?:es)?\s*(?:ao|por)\s*dia\b/i);
+  if (m) { const n = Number(m[1]); return n > 0 ? `${String(24 / n).replace('.', ',')} h` : ''; }
+  m = frase.match(/a cada\s+(\d+)\s*dias?\b/i);
+  if (m) return `${m[1]} dias`;
+  return '';
+}
+function extrairDuracao(frase) {
+  const m = frase.match(/(?:durante|por)\s+(\d+)\s*(dias?|semanas?|mes(?:es)?|m[eê]s)\b/i);
+  if (m) return `${m[1]} ${m[2].toLowerCase()}`;
+  if (/uso\s+cont[ií]nuo/i.test(frase)) return 'uso contínuo';
+  return '';
+}
+// O que sobra da frase depois de como/intervalo/duração (ex.: "Após refeições.").
+function extrairResto(frase) {
+  const partes = frase.split(/(?<=\.)\s+/);
+  return partes.slice(1).join(' ').trim();
+}
+
+/**
+ * Converte o texto colado em { linhas, orientacoes }.
+ * linhas: [{ remedio, dose, como, intervalo, duracao, via, comprar, aplicado:false }]
+ */
+export function linhasDoWhatsapp(texto) {
+  const linhas = [];
+  const sobras = [];
+  let via = VIA_PADRAO;
+  const brutas = String(texto ?? '').split(/\r?\n/).map(limparMarcas);
+  const ehInstrucao = (t) => RE_VERBO.test(t);
+  for (let i = 0; i < brutas.length; i++) {
+    const t = brutas[i];
+    if (!t) continue;
+    const mv = t.match(RE_VIA);
+    if (mv) { const k = semAcento(mv[1]); via = NOMES_VIA[k] || `Uso ${mv[1].toLowerCase()}`; continue; }
+    // linha "Uso oral 1 - Remédio" (via e remédio juntos, ex.: copiado sem quebra)
+    const viaGrudada = t.match(/^\s*uso\s+(oral|injet[aá]vel|t[oó]pico|otol[oó]gico|oft[aá]lmico)\s+(.+)$/i);
+    let corpo = t;
+    if (viaGrudada && /^\d{1,2}\s*[-–—.)]/.test(viaGrudada[2])) { via = NOMES_VIA[semAcento(viaGrudada[1])]; corpo = viaGrudada[2]; }
+
+    if (ehInstrucao(corpo)) {
+      const alvo = linhas.at(-1);
+      if (alvo && !alvo._comInstrucao) {
+        alvo.como = extrairComo(corpo) || alvo.como;
+        alvo.intervalo = extrairIntervalo(corpo) || alvo.intervalo;
+        alvo.duracao = extrairDuracao(corpo) || alvo.duracao;
+        const resto = extrairResto(corpo);
+        if (resto) alvo._obs.push(resto);
+        alvo._comInstrucao = true;
+      } else sobras.push(corpo);
+      continue;
+    }
+    const numerada = /^\s*\d{1,2}\s*[-–—.)]\s*\S/.test(corpo) || /^\s*[•·▪●-]\s+\S/.test(corpo);
+    let s = tirarNumeracao(corpo);
+    let comprar = '';
+    const mc = s.match(RE_COMPRAR);
+    if (mc && mc.index > 0) { comprar = mc[1].toUpperCase().replace(/\s+/g, ' ').replace(/\.$/, ''); s = s.slice(0, mc.index).trim(); }
+    s = s.replace(/[_.\-–—\s]+$/, '').trim();
+    const md = s.match(RE_DOSE);
+    const proximaEhInstrucao = ehInstrucao(brutas.slice(i + 1).find((x) => x) || '');
+    const pareceRemedio = numerada || !!md || !!comprar || proximaEhInstrucao;
+    // Linha de título ("Receita do Thor:") ou conversa vira orientação.
+    if (!pareceRemedio || /:\s*$/.test(s)) { sobras.push(corpo); continue; }
+    let remedio = s, dose = '', resto = '';
+    if (md) {
+      remedio = s.slice(0, md.index).trim();
+      dose = md[1].replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/');
+      resto = s.slice(md.index + md[0].length).replace(/^[\s,;\-–—]+/, '').trim();
+    }
+    const nova = { ...linhaVazia(), remedio: remedio.replace(/[\s,;\-–—]+$/, ''), dose, via, comprar, _obs: [], _comInstrucao: false };
+    // Tudo na mesma linha: "Amoxicilina 250 mg - 1 comprimido a cada 12h por 7 dias"
+    if (resto) {
+      const frase = /^\d|^meio|^1\/2|^½|^uma?\b/i.test(resto) ? `Administrar ${resto}` : resto;
+      nova.como = extrairComo(frase);
+      nova.intervalo = extrairIntervalo(frase);
+      nova.duracao = extrairDuracao(frase);
+      if (nova.como || nova.intervalo || nova.duracao) nova._comInstrucao = true;
+      else nova._obs.push(resto);
+    }
+    linhas.push(nova);
+  }
+  const orientacoes = [];
+  for (const l of linhas) {
+    // "Após refeições." fica junto da instrução do remédio (como o doutor escreveu),
+    // indo no fim da Duração; sem duração, vai para as orientações.
+    const obs = l._obs.join(' ').replace(/[.\s]+$/, '');
+    if (obs && l.duracao) l.duracao = `${l.duracao}. ${obs}`;
+    else if (obs) orientacoes.push(`${nomeComDose(l.remedio, l.dose)}: ${obs}.`);
+    delete l._obs; delete l._comInstrucao;
+  }
+  orientacoes.push(...sobras);
+  return { linhas, orientacoes: orientacoes.join('\n') };
+}
