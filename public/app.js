@@ -1133,6 +1133,7 @@ function cartaoCandidato(c, aoEscolher) {
 async function telaChegadaNova(petPre = null, consulta = '') {
   const minha = versaoTela;
   let escolhido = null; // candidato escolhido ("É este"); null = cadastro novo
+  let tutorEscolhido = null; // tutor já cadastrado escolhido para um pet NOVO ("Novo pet deste tutor")
   if (petPre) {
     carregando();
     try { escolhido = await candidatoDoPet(petPre); } catch (e) { if (minha === versaoTela) telaErro(e, '#/hoje'); return; }
@@ -1149,8 +1150,27 @@ async function telaChegadaNova(petPre = null, consulta = '') {
   const entradaPet = el('input', { id: 'pet_nome', name: 'pet_nome', autocomplete: 'off', required: true });
   const entradaTutor = el('input', { id: 'tutor_nome', name: 'tutor_nome', autocomplete: 'off', required: true });
   const entradaFone = el('input', { id: 'whatsapp', name: 'whatsapp', type: 'tel', inputmode: 'tel', placeholder: '(71) 99999-8888', autocomplete: 'off' });
-  const blocoNomes = el('div', {}, el('label', { for: 'pet_nome' }, 'Nome do pet'), entradaPet, el('label', { for: 'tutor_nome' }, 'Nome do tutor'), entradaTutor, sugestoes);
-  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, el('label', { for: 'whatsapp' }, 'WhatsApp do tutor (opcional)'), entradaFone, detalhes.caixa);
+  const rotuloTutor = el('label', { for: 'tutor_nome' }, 'Nome do tutor');
+  const cabecaTutor = el('div', { class: 'cartao cabeca-tutor', id: 'tutor-escolhido', hidden: true });
+  const sugTutores = el('div', { id: 'sugestoes-tutores' });
+  const blocoNomes = el('div', {}, el('label', { for: 'pet_nome' }, 'Nome do pet'), entradaPet, rotuloTutor, entradaTutor, cabecaTutor, sugestoes, sugTutores);
+  const rotuloFone = el('label', { for: 'whatsapp' }, 'WhatsApp do tutor (opcional)');
+  const blocoNovo = el('div', {}, el('label', {}, 'Espécie'), especie.caixa, rotuloFone, entradaFone, detalhes.caixa);
+
+  // Pet novo de um tutor que já tem cadastro: some o nome/WhatsApp do tutor e mostra quem é.
+  function desenharTutor() {
+    const t = tutorEscolhido;
+    rotuloTutor.hidden = entradaTutor.hidden = rotuloFone.hidden = entradaFone.hidden = !!t;
+    cabecaTutor.hidden = !t;
+    if (t) {
+      cabecaTutor.replaceChildren(
+        el('div', { class: 'candidato-info' },
+          el('div', {}, 'Tutor: ', el('strong', {}, t.nome), t.final_telefone ? ` · final ${t.final_telefone}` : ''),
+          el('div', { class: 'suave' }, t.pets.length ? 'Já tem: ' + t.pets.map((p) => p.nome).join(', ') : 'Ainda sem pets')),
+        el('button', { type: 'button', class: 'secundario', id: 'trocar-tutor', onclick: () => { tutorEscolhido = null; desenharTutor(); procurar(); } }, 'trocar'));
+      sugTutores.replaceChildren();
+    }
+  }
   const cabecaEscolhido = el('div', { class: 'cartao cabeca-chegada', id: 'pet-escolhido' });
   const blocoPeso = el('div', { class: 'bloco-chegada' }, ...campos.peso);
 
@@ -1185,11 +1205,25 @@ async function telaChegadaNova(petPre = null, consulta = '') {
     if (escolhido) return;
     const meu = ++numero;
     const pet = entradaPet.value.trim();
-    if (pet.length < 2) { sugestoes.replaceChildren(); return; }
-    const qs = new URLSearchParams({ pet, tutor: entradaTutor.value.trim(), whatsapp: entradaFone.value.trim() });
+    const tutorTxt = tutorEscolhido ? '' : entradaTutor.value.trim();
+    if (pet.length < 2 && tutorTxt.length < 3) { sugestoes.replaceChildren(); sugTutores.replaceChildren(); return; }
+    const qs = new URLSearchParams({ pet, tutor: tutorEscolhido ? tutorEscolhido.nome : tutorTxt, whatsapp: tutorEscolhido ? '' : entradaFone.value.trim() });
     try {
-      const { sugestoes: lista } = await api('GET', '/api/chegada/sugestoes?' + qs);
+      const { sugestoes: lista, tutores = [] } = await api('GET', '/api/chegada/sugestoes?' + qs);
       if (meu !== numero || escolhido || minha !== versaoTela) return;
+      sugTutores.replaceChildren(...(!tutorEscolhido && tutores.length
+        ? [el('section', { class: 'cartao sugestoes', 'aria-label': 'Este tutor já tem cadastro?' },
+          el('p', { class: 'sug-titulo' }, 'Este tutor já tem cadastro?'),
+          ...tutores.map((t) => el('div', { class: 'candidato', 'data-tutor-id': String(t.id) },
+            el('div', { class: 'candidato-cartao' },
+              el('div', { class: 'candidato-info' },
+                el('strong', { class: 'resultado-nome' }, t.nome),
+                el('span', { class: 'detalhe' }, [t.final_telefone ? 'final ' + t.final_telefone : '', t.codigo].filter(Boolean).join(' · ')),
+                el('span', { class: 'detalhe pequeno' }, t.pets.length ? 'Pets: ' + t.pets.map((p) => `${p.nome} (${(ROTULO_ESPECIE[p.especie] || p.especie).toLowerCase()})`).join(', ') : 'Ainda sem pets'))),
+            el('button', { type: 'button', class: 'secundario novo-pet-tutor', onclick: () => { tutorEscolhido = t; desenharTutor(); procurar(); entradaPet.focus(); } }, 'Novo pet deste tutor'))),
+          el('p', { class: 'sug-nota' }, 'Escolha para colocar este pet no mesmo cadastro (um tutor, vários pets).'))]
+        : []));
+      if (pet.length < 2) { sugestoes.replaceChildren(); return; }
       sugestoes.replaceChildren(...(lista.length
         ? [el('section', { class: 'cartao sugestoes', 'aria-label': 'Encontramos no cadastro' },
           el('p', { class: 'sug-titulo' }, icone('check', 16, 2.4), 'Encontramos no cadastro'),
@@ -1214,9 +1248,9 @@ async function telaChegadaNova(petPre = null, consulta = '') {
         await api('POST', '/api/atendimentos', { pet_id: escolhido.pet.id, ...chegada });
       } else {
         await api('POST', '/api/cadastro-rapido', {
-          tutor: { nome: entradaTutor.value, whatsapp: entradaFone.value },
+          tutor: tutorEscolhido ? { nome: tutorEscolhido.nome } : { nome: entradaTutor.value, whatsapp: entradaFone.value },
           pet: { nome: entradaPet.value, especie: especie.valor() || undefined, ...detalhes.valores() },
-          chegada, ...extra,
+          chegada, ...(tutorEscolhido ? { tutor_existente_id: tutorEscolhido.id } : {}), ...extra,
         });
       }
       irPara('#/hoje');

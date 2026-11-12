@@ -218,15 +218,34 @@ function textoIdade(anos, meses) {
   return partes.join(' e ') || null;
 }
 
+// Tutores com nome parecido (ou o mesmo telefone), com os pets de cada um.
+async function tutoresParecidos(env, tutorBusca, digitos) {
+  if (tutorBusca.length < 3 && !digitos) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, t.codigo, t.nome, t.whatsapp,
+            (SELECT group_concat(p.nome || '|' || p.especie, ';') FROM pets p WHERE p.tutor_id = t.id AND p.ativo = 1) AS pets
+       FROM tutores t
+      WHERE t.mesclado_em_id IS NULL
+        AND ((? = 1 AND t.nome_busca LIKE ? ESCAPE '\\') OR (? = 1 AND t.whatsapp_digitos LIKE ?))
+      ORDER BY t.nome_busca, t.id LIMIT 5`
+  ).bind(tutorBusca.length >= 3 ? 1 : 0, likeSeguro(tutorBusca), digitos ? 1 : 0, '%' + digitos + '%').all();
+  return results.map((t) => ({
+    id: t.id, codigo: t.codigo, nome: t.nome, final_telefone: finalTelefone(t.whatsapp),
+    pets: String(t.pets ?? '').split(';').filter(Boolean).map((x) => { const [nome, especie] = x.split('|'); return { nome, especie }; }),
+  }));
+}
+
 async function chegadaSugestoes(request, env) {
   await exigirLogin(request, env);
   const qs = new URL(request.url).searchParams;
   const pet = normalizarBusca(qs.get('pet'));
   const tutor = normalizarBusca(qs.get('tutor'));
   const digitos = String(qs.get('whatsapp') ?? '').replace(/\D/g, '');
-  if (pet.length < 2) return json({ sugestoes: [] });
   const usaFone = digitos.length >= 8;
   const tutorValido = tutor.length >= 2;
+  // Tutores já cadastrados (para "Novo pet deste tutor"): pelo nome (3+ letras) ou telefone.
+  const tutores = await tutoresParecidos(env, tutor, usaFone ? digitos : '');
+  if (pet.length < 2) return json({ sugestoes: [], tutores });
 
   const { results } = await env.DB.prepare(
     `SELECT p.id, p.codigo, p.nome, p.nome_busca, p.especie, p.idade_anos, p.idade_meses, p.foto_id,
@@ -254,6 +273,7 @@ async function chegadaSugestoes(request, env) {
   candidatos.sort((a, b) => a.nivel - b.nivel || a.comeca - b.comeca || String(b.r.ultima_visita_em ?? '').localeCompare(String(a.r.ultima_visita_em ?? '')) || a.r.id - b.r.id);
 
   return json({
+    tutores,
     sugestoes: candidatos.slice(0, MAX_SUGESTOES_CHEGADA).map(({ r }) => ({
       pet: { id: r.id, codigo: r.codigo, nome: r.nome, especie: r.especie, idade: textoIdade(r.idade_anos, r.idade_meses), foto_id: r.foto_id ?? null },
       tutor: { id: r.tutor_id, nome: r.tutor_nome, final_telefone: finalTelefone(r.whatsapp) },

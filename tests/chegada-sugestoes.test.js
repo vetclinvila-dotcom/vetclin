@@ -149,6 +149,7 @@ test('exclui pet arquivado e tutor unido a outro', async () => {
   // mesmo buscando pelo WhatsApp do tutor unido, ele não aparece como tutor
   r = await sugerir(a, { pet: 'rex', whatsapp: '71 96666-7777' });
   assert.ok(r.dados.sugestoes.every((s) => s.tutor.id !== c4.tutor.id));
+  assert.ok(r.dados.tutores.every((t) => t.id !== c4.tutor.id), 'tutor unido não aparece');
 });
 
 test('no máximo 5 candidatos', async () => {
@@ -163,4 +164,31 @@ test('caracteres de LIKE (% e _) são tratados como letras', async () => {
   await cadastrar(a, 'Thor', 'Maria', '(71) 99999-8888');
   assert.equal((await sugerir(a, { pet: '%%', tutor: 'maria' })).dados.sugestoes.length, 0);
   assert.equal((await sugerir(a, { pet: 't_r', tutor: 'maria' })).dados.sugestoes.length, 0);
+});
+
+// Um tutor, vários pets: ao digitar o nome (ou WhatsApp) do tutor, ele aparece com os pets dele.
+test('tutores parecidos: aparece pelo nome mesmo sem pet digitado, com a lista de pets', async () => {
+  const a = await ambiente();
+  const c = await cadastrar(a, 'Branquinho', 'Tiago de Jesus', '(91) 98888-1234');
+  let r = await sugerir(a, { tutor: 'tiago' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.dados.sugestoes, []);
+  assert.equal(r.dados.tutores.length, 1);
+  const t = r.dados.tutores[0];
+  assert.equal(t.id, c.tutor.id);
+  assert.equal(t.final_telefone, '1234');
+  assert.deepEqual(t.pets, [{ nome: 'Branquinho', especie: 'cao' }]);
+  assert.equal(t.whatsapp, undefined, 'não devolve o telefone completo');
+  // pelo WhatsApp também
+  r = await sugerir(a, { pet: 'Malhadin', whatsapp: '91 98888-1234' });
+  assert.equal(r.dados.tutores[0].id, c.tutor.id);
+  // nome curto (menos de 3 letras) e sem telefone: nada
+  assert.deepEqual((await sugerir(a, { tutor: 'ti' })).dados.tutores, []);
+  // pet novo no mesmo tutor
+  const novo = await chamar(a.e, 'POST', '/api/cadastro-rapido', { cookie: a.cookie, corpo: { tutor: { nome: 'Tiago de Jesus' }, pet: { nome: 'Malhadin', especie: 'cao' }, tutor_existente_id: t.id } });
+  assert.equal(novo.status, 201);
+  assert.equal(novo.dados.tutor.id, c.tutor.id);
+  r = await sugerir(a, { tutor: 'tiago de' });
+  assert.equal(r.dados.tutores.length, 1);
+  assert.deepEqual(r.dados.tutores[0].pets.map((p) => p.nome).sort(), ['Branquinho', 'Malhadin']);
 });
