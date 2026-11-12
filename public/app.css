@@ -1,0 +1,94 @@
+/* Visual do Vetclin: simples, com letras grandes e botões fáceis de tocar. */
+:root {
+  --cor-destaque: #0f766e;
+  --cor-destaque-escura: #115e59;
+  --cor-fundo: #f6f8f8;
+  --cor-cartao: #ffffff;
+  --cor-texto: #1b2a2a;
+  --cor-texto-suave: #4b5e5e;
+  --cor-borda: #c5d1d1;
+  --cor-erro: #9f1239;
+  --raio: 12px;
+}
+* { box-sizing: border-box; }
+html { font-size: 16px; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.5;
+  color: var(--cor-texto);
+  background: var(--cor-fundo);
+}
+#app { max-width: 720px; margin: 0 auto; padding: 16px; padding-bottom: 48px; }
+h1 { font-size: 1.6rem; margin: 8px 0 16px; }
+h2 { font-size: 1.3rem; margin: 24px 0 12px; }
+.carregando { text-align: center; color: var(--cor-texto-suave); padding: 48px 0; }
+
+.topo { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.marca { font-weight: 700; font-size: 1.3rem; color: var(--cor-destaque); }
+
+.cartao {
+  background: var(--cor-cartao);
+  border: 1px solid var(--cor-borda);
+  border-radius: var(--raio);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.suave { color: var(--cor-texto-suave); }
+
+label { display: block; font-weight: 600; margin: 14px 0 6px; }
+input, select {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  border: 2px solid var(--cor-borda);
+  border-radius: 10px;
+}
+input[type="checkbox"] { width: 24px; min-height: 24px; height: 24px; vertical-align: middle; margin-right: 8px; }
+label.linha { display: flex; align-items: center; font-weight: 500; min-height: 48px; }
+input:focus, select:focus, button:focus-visible, a:focus-visible {
+  outline: 3px solid #5eead4;
+  outline-offset: 2px;
+  border-color: var(--cor-destaque);
+}
+
+button, .botao {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 10px 20px;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--cor-destaque);
+  border: 2px solid var(--cor-destaque);
+  border-radius: 10px;
+  cursor: pointer;
+}
+button:hover { background: var(--cor-destaque-escura); }
+button.secundario { color: var(--cor-destaque-escura); background: #fff; border-color: var(--cor-destaque); }
+button.secundario:hover { background: #ecfdf5; }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+form button[type="submit"] { width: 100%; margin-top: 20px; }
+
+.mensagem { padding: 12px 14px; border-radius: 10px; margin: 12px 0; font-weight: 500; }
+.mensagem.erro { color: var(--cor-erro); background: #fff1f2; border: 1px solid #fda4af; }
+.mensagem.ok { color: #14532d; background: #f0fdf4; border: 1px solid #86efac; }
+
+.lista-usuarios { list-style: none; padding: 0; margin: 0; }
+.lista-usuarios li { padding: 14px 0; border-bottom: 1px solid var(--cor-borda); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.lista-usuarios li:last-child { border-bottom: 0; }
+.etiqueta { display: inline-block; font-size: 0.875rem; padding: 2px 10px; border-radius: 999px; background: #e6f4f1; color: var(--cor-destaque-escura); margin-right: 6px; }
+.etiqueta.inativo { background: #e5e7eb; color: #374151; }
+
+.acoes { display: flex; gap: 12px; flex-wrap: wrap; }
+
+@media (min-width: 720px) {
+  #app { padding-top: 32px; }
+  form button[type="submit"] { width: auto; }
+}

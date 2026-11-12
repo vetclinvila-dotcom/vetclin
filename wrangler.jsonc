@@ -1,0 +1,46 @@
+// Configuração do Vetclin na Cloudflare.
+// Este arquivo diz à Cloudflare como publicar o sistema.
+{
+  // Nome do projeto na Cloudflare.
+  "name": "vetclin",
+
+  // Arquivo principal do servidor (Worker).
+  "main": "src/index.js",
+
+  // Data da versão do ambiente da Cloudflare usada pelo código.
+  "compatibility_date": "2026-11-01",
+
+  // Arquivos estáticos (telas, CSS, ícones) ficam na pasta "public".
+  // "run_worker_first": só os caminhos /api/* passam pelo servidor;
+  // o resto é entregue direto, de forma rápida.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // Banco de dados D1 (SQLite da Cloudflare).
+  // O database_id é preenchido durante a instalação: troque
+  // "COLE_AQUI_O_ID_DO_BANCO" pelo ID mostrado ao criar o banco.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vetclin",
+      "database_id": "COLE_AQUI_O_ID_DO_BANCO",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Variáveis simples (não secretas).
+  "vars": {
+    "FUSO_HORARIO": "America/Bahia"
+  },
+
+  // Registro de logs e erros no painel da Cloudflare.
+  "observability": {
+    "enabled": true
+  }
+
+  // Segredos (como CHAVE_CONFIGURACAO) NÃO ficam aqui.
+  // Eles são cadastrados com: npx wrangler secret put CHAVE_CONFIGURACAO
+}

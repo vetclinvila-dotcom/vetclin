@@ -1,0 +1,14 @@
+# Cabeçalhos de segurança enviados junto com todas as telas do Vetclin.
+# - Content-Security-Policy: o navegador só carrega código e estilos do próprio site.
+# - X-Frame-Options / frame-ancestors: ninguém consegue "embutir" o sistema em outro site.
+# - Referrer-Policy: não vaza o endereço das telas para outros sites.
+/*
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: same-origin
+  Permissions-Policy: geolocation=(), microphone=()
+
+# O service worker nunca deve ficar guardado em cache antigo.
+/sw.js
+  Cache-Control: no-cache

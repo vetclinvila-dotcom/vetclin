@@ -1,0 +1,10 @@
+{
+  "name": "vetclin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sistema de gestão da clínica veterinária Vetclin",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\""
+  }
+}
