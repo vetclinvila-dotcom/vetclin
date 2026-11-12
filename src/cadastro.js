@@ -546,6 +546,10 @@ const PETS_TESTE = `SELECT id FROM pets WHERE ${ONDE_TUTOR_TESTE} OR tutor_id IN
 const ATEND_TESTE = `SELECT id FROM atendimentos WHERE pet_id IN (${PETS_TESTE})`;
 const RECEITAS_TESTE = `SELECT id FROM receitas WHERE pet_id IN (${PETS_TESTE}) OR atendimento_id IN (${ATEND_TESTE})`;
 const PEDIDOS_TESTE = `SELECT id FROM pedidos WHERE atendimento_id IN (${ATEND_TESTE})`;
+// Internações (e suas medicações e doses) e anotações do prontuário dos pets de teste.
+const INTERNACOES_TESTE = `SELECT id FROM internacoes WHERE pet_id IN (${PETS_TESTE}) OR atendimento_id IN (${ATEND_TESTE})`;
+const MEDICACOES_TESTE = `SELECT id FROM internacao_medicacoes WHERE internacao_id IN (${INTERNACOES_TESTE})`;
+const PRONTUARIO_TESTE = `SELECT id FROM prontuario WHERE pet_id IN (${PETS_TESTE}) OR atendimento_id IN (${ATEND_TESTE}) OR internacao_id IN (${INTERNACOES_TESTE})`;
 
 // Fotos que só os dados de teste usam (se algum cadastro real usa a foto, ela fica).
 const FOTOS_TESTE = `
@@ -569,6 +573,8 @@ async function idsFotosTeste(env) {
 
 async function contarDadosTeste(env) {
   const n = async (sql) => (await env.DB.prepare(sql).first()).n;
+  const internacoes = await n(`SELECT COUNT(*) AS n FROM (${INTERNACOES_TESTE})`);
+  const anotacoes = await n(`SELECT COUNT(*) AS n FROM (${PRONTUARIO_TESTE})`);
   return {
     tutores: await n(`SELECT COUNT(*) AS n FROM tutores WHERE ${ONDE_TUTOR_TESTE}`),
     pets: await n(`SELECT COUNT(*) AS n FROM (${PETS_TESTE})`),
@@ -576,6 +582,9 @@ async function contarDadosTeste(env) {
     pedidos: await n(`SELECT COUNT(*) AS n FROM (${PEDIDOS_TESTE})`),
     receitas: await n(`SELECT COUNT(*) AS n FROM (${RECEITAS_TESTE})`),
     fotos: (await idsFotosTeste(env)).length,
+    // Só aparecem quando existem (assim a contagem de antes continua igual).
+    ...(internacoes ? { internacoes } : {}),
+    ...(anotacoes ? { anotacoes } : {}),
   };
 }
 
@@ -599,6 +608,11 @@ async function dadosTesteApagar(request, env) {
   const fotos = await idsFotosTeste(env); // guardadas antes, pois depois da exclusão não dá mais para saber
   // Ordem segura (de quem depende para quem é dependido), tudo de uma vez.
   await env.DB.batch([
+    // Prontuário e internação apontam para pets e atendimentos: saem primeiro (anotações, doses, medicações, internações).
+    env.DB.prepare(`DELETE FROM prontuario WHERE id IN (${PRONTUARIO_TESTE})`),
+    env.DB.prepare(`DELETE FROM administracoes WHERE medicacao_id IN (${MEDICACOES_TESTE})`),
+    env.DB.prepare(`DELETE FROM internacao_medicacoes WHERE id IN (${MEDICACOES_TESTE})`),
+    env.DB.prepare(`DELETE FROM internacoes WHERE id IN (${INTERNACOES_TESTE})`),
     env.DB.prepare(`DELETE FROM pagamentos WHERE pedido_id IN (${PEDIDOS_TESTE})`),
     env.DB.prepare(`DELETE FROM itens_pedido WHERE pedido_id IN (${PEDIDOS_TESTE})`),
     env.DB.prepare(`DELETE FROM pedidos WHERE id IN (${PEDIDOS_TESTE})`),

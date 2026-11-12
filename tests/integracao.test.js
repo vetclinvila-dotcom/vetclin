@@ -288,6 +288,13 @@ async function bancoCompleto() {
   bruto.prepare('UPDATE tutores SET mesclado_em_id = ? WHERE id = ?').run(c2.tutor.id, c1.tutor.id); // aponta para um id MAIOR
   bruto.prepare(`INSERT INTO sugestoes_receita (texto, texto_busca, vezes, ultimo_uso, tipo) VALUES ('Dipirona 500 mg', 'dipirona 500 mg', 3, '2026-11-01T00:00:00.000Z', 'linha')`).run();
   await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.admin, corpo: { clinica_nome: 'Vetclin Teste', clinica_cidade: 'Salvador' } });
+  // Prontuário e internação (anotação, baia, medicação e dose).
+  assert.equal((await chamar(a.env, 'POST', '/api/prontuario', { cookie: a.admin, corpo: { pet_id: c1.pet.id, atendimento_id: c1.at, texto: 'Paciente alerta; "mucosas" normais.' } })).status, 201);
+  const intern = await chamar(a.env, 'POST', '/api/internacoes', { cookie: a.admin, corpo: { pet_id: c2.pet.id, baia_id: 1, motivo: 'Desidratação' } });
+  assert.equal(intern.status, 201);
+  const medic = await chamar(a.env, 'POST', `/api/internacoes/${intern.dados.internacao.id}/medicacoes`, { cookie: a.admin, corpo: { remedio: 'Dipirona', dose: '500 mg', intervalo_horas: 8 } });
+  assert.equal(medic.status, 201);
+  assert.equal((await chamar(a.env, 'POST', `/api/internacao-medicacoes/${medic.dados.medicacoes[0].id}/administrar`, { cookie: a.admin, corpo: {} })).status, 201);
   // Tabelas que NÃO podem sair no backup.
   bruto.prepare(`INSERT INTO push_chaves (id, publica, privada_jwk, contato, criado_em) VALUES (1, 'PUBLICA-SECRETA-X', 'PRIVADA-JWK-SECRETA-Y', 'a@b.c', '2026-01-01T00:00:00.000Z')`).run();
   bruto.prepare(`INSERT INTO inscricoes_push (usuario_id, endpoint, p256dh, auth, criado_em) VALUES (1, 'https://push.exemplo/ENDPOINT-SECRETO', 'P256-SECRETO', 'AUTH-SECRETO', '2026-01-01T00:00:00.000Z')`).run();
@@ -305,7 +312,7 @@ test('backup: tem todas as tabelas, exceto sessões/tentativas/push, e nenhum se
   assert.ok(Date.parse(b.gerado_em));
   assert.ok(Array.isArray(b.migracoes));
   for (const proibida of ['sessoes', 'tentativas_login', 'push_chaves', 'inscricoes_push', 'sqlite_sequence', 'd1_migrations']) assert.ok(!(proibida in b.tabelas), proibida);
-  const esperadas = ['usuarios', 'tutores', 'pets', 'atendimentos', 'catalogo', 'pedidos', 'itens_pedido', 'pagamentos', 'registro_acoes', 'contadores', 'fotos', 'receitas', 'sugestoes_receita', 'configuracoes', 'receita_itens'];
+  const esperadas = ['usuarios', 'tutores', 'pets', 'atendimentos', 'catalogo', 'pedidos', 'itens_pedido', 'pagamentos', 'registro_acoes', 'contadores', 'fotos', 'receitas', 'sugestoes_receita', 'configuracoes', 'receita_itens', 'prontuario', 'baias', 'internacoes', 'internacao_medicacoes', 'administracoes'];
   assert.deepEqual(Object.keys(b.tabelas).sort(), esperadas.sort());
   for (const nome of esperadas) assert.ok(b.tabelas[nome].length > 0 || ['x'].includes(nome), `${nome} vazia`);
   // Senhas, chaves e token: nada no JSON.
@@ -358,6 +365,11 @@ test('restauração: backup -> SQL -> banco novo com as mesmas linhas e campos-c
   assert.equal(novo.DB.bruto.prepare(`SELECT nome FROM pets WHERE id = ?`).get(c1.pet.id).nome, "D'Artagnan");
   assert.match(novo.DB.bruto.prepare(`SELECT motivo FROM (SELECT estorno_motivo AS motivo FROM pagamentos WHERE estornado = 1)`).get().motivo, /Erro de digitação; o cliente disse 'não'/);
   assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM receita_itens').get().n, 1);
+  // Prontuário e internação voltam inteiros (as baias iniciais da migração são substituídas pelas do backup).
+  assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM prontuario').get().n, 1);
+  assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM internacoes').get().n, 1);
+  assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM administracoes').get().n, 1);
+  assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM baias').get().n, backup.tabelas.baias.length);
   assert.equal(novo.DB.bruto.prepare('SELECT valor FROM contadores WHERE nome = ?').get('pet').valor, backup.tabelas.contadores.find((x) => x.nome === 'pet').valor);
   // Tabelas excluídas ficam vazias no banco novo; o token não volta.
   assert.equal(novo.DB.bruto.prepare('SELECT COUNT(*) AS n FROM push_chaves').get().n, 0);

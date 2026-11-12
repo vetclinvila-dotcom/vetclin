@@ -10,6 +10,8 @@ import { mascararChave, payloadPix, txidDoPedido } from './pix.js';
 import { qrParaSvg } from './qr.js';
 import { linkWhatsapp as linkWhatsappFinanceiro, montarMensagemFinanceiro, nomeArquivoComprovante } from './mensagem-financeiro.js';
 import { ROTULO_CATEGORIA, ROTULO_FORMA, atualizarDaReceita, estadoDaConta, receitaDesatualizada, totalDosItens, trocoDe } from './conta-regras.js';
+import { MAX_QUANTIDADE, adicionarProduto, filtrarProdutos, produtosDoCarrinho, quantidadeNoCarrinho, removerUmProduto, resumoCarrinho } from './carrinho.js';
+import { inicioBahiaParaISO, isoParaCampoBahia, ordinalDia, pilulaProxima, resumoInternados, tempoInternado, textoIntervalo, textoStatusMedicacao } from './internacao-regras.js';
 
 const raiz = document.getElementById('app');
 let usuario = null; // usuário logado
@@ -356,7 +358,7 @@ function dialogoCampo({ titulo, texto = null, rotulo, rotuloOk, tipo = 'texto', 
       texto ? el('p', {}, texto) : null,
       el('label', { for: 'dialogo-campo' }, rotulo), entrada, area,
       el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'dialogo-voltar' }, 'Voltar')));
-    const fechar = (v) => { clearTimeout(tempoPix); d.close(); d.remove(); resolve(v); };
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
     ok.addEventListener('click', async () => {
       area.replaceChildren();
       ok.disabled = true;
@@ -540,6 +542,95 @@ function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgen
   };
 }
 
+// ---------- Prontuário (anotações clínicas; só veterinário e suporte) ----------
+// Caixa para escrever + linha do tempo das anotações. Serve para a ficha do pet e para a "Evolução" da internação.
+//  - "atendimento": { id, chegada_em } liga a nova anotação a esse atendimento (vem do botão "Anotar").
+//  - "internacaoId": liga a nova anotação a essa internação.
+//  - "aoMudar()": chamada depois de salvar ou editar; quem usa a seção recarrega as anotações com "definirNotas".
+function secaoProntuario({ petId, atendimento = null, internacaoId = null, titulo = 'Prontuário', mostrarLigacoes = true, aoMudar }) {
+  const minha = versaoTela;
+  let vinculo = atendimento;
+  const erro = el('div');
+  const lista = el('div', { class: 'pront-lista' }, el('p', { class: 'carregando' }, 'Carregando…'));
+  const vinculoEl = el('div');
+  const texto = el('textarea', { id: 'prontuario-texto', class: 'pront-texto', rows: 6, maxlength: 10000, placeholder: 'Escreva o que aconteceu com o paciente' });
+  const salvar = el('button', { type: 'button', class: 'grande', id: 'prontuario-salvar' }, 'Salvar anotação');
+
+  function desenharVinculo() {
+    vinculoEl.replaceChildren(...(vinculo ? [el('p', { class: 'pront-vinculo' },
+      el('span', { class: 'etiqueta' }, `Ligada ao atendimento de ${formatarDia(vinculo.chegada_em)} às ${formatarHora(vinculo.chegada_em)}`),
+      el('button', { type: 'button', class: 'secundario pequeno', onclick: () => { vinculo = null; desenharVinculo(); } }, 'Tirar ligação'))] : []));
+  }
+
+  salvar.addEventListener('click', async () => {
+    erro.replaceChildren();
+    const t = texto.value.trim();
+    if (!t) { erro.replaceChildren(caixaMensagem('erro', 'Escreva a anotação antes de salvar.')); texto.focus(); return; }
+    salvar.disabled = true;
+    try {
+      await api('POST', '/api/prontuario', { pet_id: petId, texto: t, ...(vinculo ? { atendimento_id: vinculo.id } : {}), ...(internacaoId ? { internacao_id: internacaoId } : {}) });
+      texto.value = '';
+      mostrarToast('Anotação salva');
+      await aoMudar();
+    } catch (e) { erro.replaceChildren(caixaMensagem('erro', e.message)); }
+    salvar.disabled = false;
+  });
+
+  function itemNota(n) {
+    const corpo = el('div', { class: 'pront-corpo' });
+    const rodape = el('div', { class: 'pront-rodape' });
+    const mostrarTexto = () => {
+      corpo.replaceChildren(el('p', { class: 'pront-nota-texto' }, n.texto));
+      rodape.replaceChildren(...(n.pode_editar ? [el('button', { type: 'button', class: 'secundario pequeno editar-nota', onclick: editar }, 'Editar')] : []));
+    };
+    function editar() {
+      const area = el('textarea', { class: 'pront-texto', rows: 5, maxlength: 10000, 'aria-label': 'Editar anotação' }, n.texto);
+      const aviso = el('div');
+      const ok = el('button', { type: 'button', class: 'pequeno' }, 'Salvar alteração');
+      ok.addEventListener('click', async () => {
+        aviso.replaceChildren();
+        ok.disabled = true;
+        try { await api('PATCH', `/api/prontuario/${n.id}`, { texto: area.value }); mostrarToast('Anotação atualizada'); await aoMudar(); } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+      });
+      corpo.replaceChildren(area);
+      rodape.replaceChildren(aviso, el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario pequeno', onclick: mostrarTexto }, 'Cancelar')));
+      area.focus();
+    }
+    mostrarTexto();
+    return el('article', { class: 'pront-item' },
+      el('div', { class: 'pront-cab' },
+        el('strong', {}, `${formatarDia(n.criado_em)} · ${formatarHora(n.criado_em)}`),
+        el('span', { class: 'pront-autor' }, nomeComTitulo(n.autor)),
+        n.editado_em ? el('span', { class: 'etiqueta', title: `Editado em ${formatarDataHora(n.editado_em)}${n.editado_por_nome ? ' por ' + n.editado_por_nome : ''}` }, 'editado') : null,
+        mostrarLigacoes && n.atendimento ? el('span', { class: 'etiqueta' }, `Atendimento de ${formatarDia(n.atendimento.chegada_em)}`) : null,
+        mostrarLigacoes && n.internacao ? el('a', { class: 'etiqueta etiqueta-link', href: `#/internacao/${n.internacao.id}` }, `Internação · ${n.internacao.baia_nome}`) : null),
+      corpo, rodape);
+  }
+
+  function definirNotas(notas) {
+    if (minha !== versaoTela) return;
+    lista.replaceChildren(...(notas.length ? notas.map(itemNota) : [el('p', { class: 'suave' }, 'Nenhuma anotação ainda.')]));
+  }
+  desenharVinculo();
+  const raiz = el('section', { class: 'cartao pront-secao', id: 'prontuario', 'aria-label': titulo },
+    el('h2', {}, titulo),
+    el('label', { for: 'prontuario-texto' }, 'Escreva o que aconteceu com o paciente'),
+    texto, vinculoEl, erro, salvar,
+    el('div', { class: 'pront-linha-tempo' }, lista));
+  return { raiz, definirNotas, focar: () => { raiz.scrollIntoView({ block: 'start' }); texto.focus(); } };
+}
+
+// Aviso rápido embaixo da tela ("Adicionado: Vacina V10"). Some sozinho.
+let tempoToast = null;
+function mostrarToast(textoToast) {
+  let t = document.getElementById('toast');
+  if (!t) { t = el('div', { id: 'toast', class: 'toast', role: 'status', 'aria-live': 'polite' }); document.body.append(t); }
+  t.textContent = textoToast;
+  t.classList.add('visivel');
+  clearTimeout(tempoToast);
+  tempoToast = setTimeout(() => t.classList.remove('visivel'), 1800);
+}
+
 // ---------- Hoje ----------
 const PODE_ATENDER = ['veterinario', 'suporte']; // quem inicia e finaliza atendimentos
 
@@ -634,6 +725,11 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
     b.addEventListener('click', async () => { b.disabled = true; try { await abrirNovaReceita({ atendimento_id: a.id }); } catch (e) { b.disabled = false; aoErro(e); } });
     botoes.push(b);
   }
+  if (a.status === 'em_atendimento' && PODE_ATENDER.includes(usuario.papel)) {
+    // "Anotar" abre o prontuário do pet já ligado a este atendimento; "Produtos" abre a conta direto no carrinho.
+    botoes.push(el('button', { type: 'button', class: 'secundario anotar-botao', onclick: () => irPara(`#/pet/${p.id}?anotar=${a.id}`) }, 'Anotar'));
+    botoes.push(el('button', { type: 'button', class: 'secundario produtos-botao', onclick: () => irPara(`#/conta/${a.id}?aba=produtos`) }, 'Produtos'));
+  }
   botoes.push(el('button', { type: 'button', class: 'secundario colar-botao', onclick: () => irPara(`#/receitas/transcrever?pet=${p.id}&atendimento=${a.id}`) }, 'Receita do WhatsApp'));
   if (a.status === 'chegou' || a.status === 'em_atendimento') {
     botoes.push(el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/atendimento/${a.id}/editar`) }, 'Editar'));
@@ -690,6 +786,8 @@ function telaHoje() {
   let dados = null;
   let finalizadosAberto = false;
   let receitas = { imprimir: [], pedidas: [] };
+  let internacao = null; // resumo do quadro das baias
+  const faixaInternacao = el('div');
   const avisos = el('div');
   // Cartão "Ativar notificações": só aparece enquanto este aparelho não recebe avisos.
   const cartaoAviso = el('div');
@@ -706,8 +804,9 @@ function telaHoje() {
         el('button', { type: 'button', class: 'grande', id: 'registrar-chegada', onclick: () => irPara('#/chegada/nova') }, icone('mais', 22, 2.6), 'Registrar chegada'),
         el('button', { type: 'button', class: 'secundario buscar', id: 'buscar-paciente', onclick: () => irPara('#/busca') }, icone('buscar', 18), 'Buscar paciente'))),
     cartaoAviso,
-    avisos, colunas,
+    avisos, faixaInternacao, colunas,
     el('div', { class: 'acoes atalhos-rodape so-celular' },
+      el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/internacao') }, 'Internação'),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/precos') }, 'Preços'),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/notificacoes') }, 'Notificações'),
       usuario.admin ? el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/caixa') }, 'Caixa de hoje') : null,
@@ -763,6 +862,9 @@ function telaHoje() {
 
   function desenhar() {
     if (!dados) return;
+    faixaInternacao.replaceChildren(...(internacao && internacao.resumo.internados > 0
+      ? [el('button', { type: 'button', class: 'faixa-internacao' + (internacao.resumo.medicacoes_atrasadas ? ' com-atraso' : ''), id: 'faixa-internacao', onclick: () => irPara('#/internacao') }, resumoInternados(internacao.resumo), el('span', { class: 'faixa-internacao-ver' }, 'Ver baias'))]
+      : []));
     const total = dados.aguardando.length + dados.em_atendimento.length + dados.finalizados.length + dados.cancelados_hoje;
     contagemTitulo.textContent = total ? ` · ${total} ${total === 1 ? 'atendimento' : 'atendimentos'}` : '';
     const finais = el('details', { class: 'finalizados', open: finalizadosAberto },
@@ -783,13 +885,15 @@ function telaHoje() {
   async function atualizar() {
     if (minha !== versaoTela) return;
     try {
-      const [novo, imprimir, pedidas] = await Promise.all([
+      const [novo, imprimir, pedidas, quadro] = await Promise.all([
         api('GET', '/api/hoje'),
         api('GET', '/api/receitas?status=para_imprimir').catch(() => null),
         PODE_ATENDER.includes(usuario.papel) ? api('GET', '/api/receitas?pedidas_a_mim=1').catch(() => null) : null,
+        api('GET', '/api/internacao').catch(() => null),
       ]);
       if (minha !== versaoTela) return;
       dados = novo;
+      internacao = quadro;
       receitas = { imprimir: imprimir ? imprimir.receitas : receitas.imprimir, pedidas: pedidas ? pedidas.receitas : (PODE_ATENDER.includes(usuario.papel) ? receitas.pedidas : []) };
       avisos.replaceChildren();
       desenhar();
@@ -1092,13 +1196,17 @@ async function telaEditarAtendimento(id) {
 }
 
 // ---------- Ficha do pet ----------
-async function telaPet(id) {
+async function telaPet(id, consulta = '') {
   const minha = versaoTela;
   carregando();
   let d;
   try { d = await api('GET', `/api/pets/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/busca'); return; }
   if (minha !== versaoTela) return;
   const { pet, tutor, atendimentos, atendimento_aberto: aberto, receitas = [] } = d;
+  const vet = PODE_ATENDER.includes(usuario.papel); // prontuário e internação: só veterinário e suporte
+  const anotarId = Number(new URLSearchParams(consulta).get('anotar')) || null; // vindo do botão "Anotar" do atendimento
+  const blocoProntuario = el('div', { class: 'bloco-prontuario' });
+  const blocoInternacao = el('div');
   const linha = (rotulo, ...valor) => el('p', {}, el('span', { class: 'suave' }, rotulo + ': '), ...valor);
   mostrar(
     cabecalho(), botaoVoltar('#/busca', '← Buscar'),
@@ -1127,6 +1235,7 @@ async function telaPet(id) {
       pet.observacoes ? linha('Observações', pet.observacoes) : null,
       el('p', {}, el('small', { class: 'suave' }, pet.codigo)),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/pet/${pet.id}/editar`) }, 'Editar')),
+    blocoInternacao, blocoProntuario,
     el('h2', {}, 'Tutor'),
     el('div', { class: 'cartao' },
       el('p', {}, el('strong', {}, tutor.nome)),
@@ -1148,6 +1257,28 @@ async function telaPet(id) {
           a.veterinario ? el('div', { class: 'suave' }, `Veterinário(a): ${a.veterinario}`) : null)))
         : el('p', { class: 'suave' }, 'Nenhum atendimento ainda')),
   );
+
+  // Prontuário (anotações) e internação: só para veterinário e suporte. Carregam depois, sem atrasar a ficha.
+  if (vet) {
+    const atendimentoLigado = anotarId ? atendimentos.find((x) => x.id === anotarId) : null;
+    const secao = secaoProntuario({
+      petId: pet.id, atendimento: atendimentoLigado ? { id: atendimentoLigado.id, chegada_em: atendimentoLigado.chegada_em } : null,
+      aoMudar: async () => { const r = await api('GET', `/api/pets/${pet.id}/prontuario`); secao.definirNotas(r.notas); },
+    });
+    blocoProntuario.replaceChildren(secao.raiz);
+    api('GET', `/api/pets/${pet.id}/prontuario`).then((r) => {
+      if (minha !== versaoTela) return;
+      secao.definirNotas(r.notas);
+      if (r.internacao_atual) {
+        blocoInternacao.replaceChildren(el('div', { class: 'cartao aviso' },
+          el('p', {}, el('strong', {}, `Internado na ${r.internacao_atual.baia_nome}`), ` desde ${formatarDia(r.internacao_atual.inicio_em)} às ${formatarHora(r.internacao_atual.inicio_em)}`),
+          el('button', { type: 'button', onclick: () => irPara(`#/internacao/${r.internacao_atual.id}`) }, 'Abrir internação')));
+      } else if (pet.ativo) {
+        blocoInternacao.replaceChildren(el('button', { type: 'button', class: 'secundario bloco', id: 'internar-pet', onclick: () => irPara(`#/internacao?internar=${pet.id}${aberto ? '&atendimento=' + aberto.id : ''}`) }, 'Internar paciente'));
+      }
+      if (anotarId) secao.focar();
+    }).catch((e) => { if (minha === versaoTela) blocoProntuario.replaceChildren(caixaMensagem('erro', e.message)); });
+  }
 }
 
 async function telaEditarPet(id) {
@@ -1429,13 +1560,13 @@ function secaoDadosTeste() {
           const r = await api('POST', '/api/admin/apagar-dados-teste', { confirmacao: entrada.value });
           const a = r.apagados;
           caixa.replaceChildren(el('h2', {}, 'Dados de teste'),
-            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos, ${a.receitas} receitas, ${a.fotos} fotos.`));
+            caixaMensagem('ok', `Apagado: ${a.tutores} tutores, ${a.pets} pets, ${a.atendimentos} atendimentos, ${a.pedidos} pedidos, ${a.receitas} receitas, ${a.fotos} fotos${a.internacoes ? `, ${a.internacoes} internações` : ''}${a.anotacoes ? `, ${a.anotacoes} anotações do prontuário` : ''}.`));
         } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); botao.disabled = false; }
       });
       caixa.replaceChildren(
         el('h2', {}, 'Dados de teste'),
-        el('p', {}, 'Apaga todos os tutores e pets cujo nome começa com TESTE, e os atendimentos e receitas deles.'),
-        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos, ${c.receitas} receitas, ${c.fotos} fotos.`)),
+        el('p', {}, 'Apaga todos os tutores e pets cujo nome começa com TESTE, e os atendimentos, receitas, internações e anotações do prontuário deles.'),
+        el('p', {}, el('strong', {}, `Seriam apagados agora: ${c.tutores} tutores, ${c.pets} pets, ${c.atendimentos} atendimentos, ${c.pedidos} pedidos, ${c.receitas} receitas, ${c.fotos} fotos${c.internacoes ? `, ${c.internacoes} internações` : ''}${c.anotacoes ? `, ${c.anotacoes} anotações` : ''}.`)),
         el('label', { for: 'confirmacao' }, 'Para confirmar, digite APAGAR'), entrada, area, el('div', { class: 'acoes' }, botao));
     } catch (e) { caixa.replaceChildren(el('h2', {}, 'Dados de teste'), caixaMensagem('erro', e.message)); }
   };
@@ -1451,6 +1582,7 @@ function cabecalho() {
     el('a', { class: 'marca', href: '#/hoje', 'aria-label': 'Vetclin — tela Hoje' }, el('img', { class: 'logo', src: '/logo-vetclin.png', alt: 'Vetclin Clínica Veterinária', width: 122, height: 38 })),
     usuario ? el('nav', { class: 'nav-principal', 'aria-label': 'Principal' },
       atalho('Hoje', '#/hoje', /^#\/(hoje|chegada|atendimento|conta)/.test(h) || h === '#/'),
+      atalho('Internação', '#/internacao', h.startsWith('#/internacao')),
       atalho('Pacientes', '#/busca', /^#\/(busca|pet|tutor)/.test(h)),
       atalho('Receitas', '#/receitas/imprimir', /^#\/receita/.test(h)),
       atalho('Preços', '#/precos', h.startsWith('#/precos')),
@@ -2989,7 +3121,134 @@ async function telaConta(atendimentoId, consulta = '') {
   const aplicar = (r) => { d = r; itens = copia(r.pedido.itens); };
   const paraEnvio = (lista) => lista.map(({ descricao, quantidade, preco_unitario_centavos, catalogo_id, origem }) => ({ descricao, quantidade, preco_unitario_centavos, catalogo_id, origem }));
 
+  // ---- Aba "Adicionar produtos": toque num produto e ele entra na conta ----
+  // As mudanças aparecem na hora (na tela) e são enviadas ao servidor em lote, meio segundo depois do último toque.
+  let aba = new URLSearchParams(consulta).get('aba') === 'produtos' ? 'produtos' : 'conta';
+  let catalogoProdutos = null; // itens do catálogo (sem a consulta), lidos uma vez
+  let filtroCategoria = '';
+  let filtroBusca = '';
+  let salvandoCarrinho = false;
+  let carrinhoSujo = false;
+  let tempoCarrinho = null;
+  let aoCarrinhoMudar = () => {};
+
+  // Envia a lista atual. Se alguém tocou de novo enquanto enviava, envia de novo (sempre a lista mais nova).
+  async function esvaziarCarrinho() {
+    clearTimeout(tempoCarrinho);
+    while (carrinhoSujo || salvandoCarrinho) {
+      if (salvandoCarrinho) { await new Promise((r) => setTimeout(r, 50)); continue; }
+      carrinhoSujo = false;
+      salvandoCarrinho = true;
+      try {
+        const r = await api('PUT', `/api/atendimentos/${atendimentoId}/pedido/itens`, { itens: paraEnvio(itens) });
+        d = r;
+        if (!carrinhoSujo) itens = copia(r.pedido.itens);
+      } catch (e) {
+        carrinhoSujo = false;
+        salvandoCarrinho = false;
+        if (minha === versaoTela) {
+          erro.replaceChildren(caixaMensagem('erro', e.message));
+          try { aplicar(await api('GET', `/api/atendimentos/${atendimentoId}/pedido`)); desenhar(); } catch { /* mantém o que está na tela */ }
+        }
+        return;
+      }
+      salvandoCarrinho = false;
+    }
+  }
+  function carrinhoMudou() {
+    carrinhoSujo = true;
+    aoCarrinhoMudar();
+    clearTimeout(tempoCarrinho);
+    tempoCarrinho = setTimeout(esvaziarCarrinho, 500);
+  }
+  const trocarAba = async (nova) => {
+    if (nova === aba) return;
+    if (aba === 'produtos') await esvaziarCarrinho();
+    aba = nova;
+    desenhar();
+  };
+  function barraAbas() {
+    const b = (chave, rotulo) => el('button', { type: 'button', class: 'aba', role: 'tab', 'aria-selected': String(aba === chave), 'data-aba': chave, onclick: () => trocarAba(chave) }, rotulo);
+    return el('div', { class: 'abas-conta', role: 'tablist' }, b('conta', 'Conta'), b('produtos', 'Adicionar produtos'));
+  }
+
+  function painelProdutos(editavel) {
+    if (!editavel) {
+      return el('div', { class: 'cartao' }, el('p', { class: 'suave' }, 'Esta conta não pode mais receber itens (já foi paga ou cancelada).'),
+        el('button', { type: 'button', class: 'secundario', onclick: () => trocarAba('conta') }, 'Ver conta'));
+    }
+    const grade = el('div', { class: 'tile-grade' });
+    const chipsEl = el('div', { class: 'chips-filtro', role: 'group', 'aria-label': 'Categoria' });
+    const busca = el('input', { id: 'produto-busca', type: 'search', class: 'busca-grande', placeholder: 'Buscar produto', autocomplete: 'off', value: filtroBusca });
+    const barraTexto = el('span', { class: 'barra-carrinho-texto' });
+    const barra = el('div', { class: 'barra-carrinho' }, barraTexto,
+      el('button', { type: 'button', id: 'ver-conta', onclick: () => trocarAba('conta') }, 'Ver conta'));
+    const atualizadores = [];
+    const atualizarBarra = () => {
+      const r = resumoCarrinho(itens);
+      barraTexto.replaceChildren(el('strong', {}, `${r.quantidade} ${r.quantidade === 1 ? 'item' : 'itens'}`), ` · ${formatarReais(r.total_centavos)}`);
+    };
+    aoCarrinhoMudar = () => { atualizarBarra(); for (const f of atualizadores) f(); };
+
+    function tile(p) {
+      let tempo = null; let longo = false;
+      const nome = el('span', { class: 'tile-nome' }, p.nome);
+      const preco = el('strong', { class: 'tile-preco' }, formatarReais(p.preco_centavos));
+      const botao = el('button', { type: 'button', class: 'tile-botao', 'aria-label': `Adicionar ${p.nome}` }, nome, preco);
+      const qtd = el('span', { class: 'tile-qtd' });
+      const menos = el('button', { type: 'button', class: 'tile-menos', 'aria-label': `Tirar um ${p.nome}` }, '−');
+      const selo = el('div', { class: 'tile-selo', hidden: true }, menos, qtd);
+      const raizTile = el('div', { class: 'tile', 'data-produto': String(p.id) }, botao, selo);
+      const atualizar = () => {
+        const n = quantidadeNoCarrinho(itens, p.id);
+        selo.hidden = n === 0;
+        qtd.textContent = String(n);
+        raizTile.classList.toggle('na-conta', n > 0);
+      };
+      const mais = () => { if (quantidadeNoCarrinho(itens, p.id) >= MAX_QUANTIDADE) return; itens = adicionarProduto(itens, p); mostrarToast(`Adicionado: ${p.nome}`); carrinhoMudou(); };
+      const tirar = () => { if (!quantidadeNoCarrinho(itens, p.id)) return; itens = removerUmProduto(itens, p.id); mostrarToast(`Removido: ${p.nome}`); carrinhoMudou(); };
+      menos.addEventListener('click', (ev) => { ev.stopPropagation(); tirar(); });
+      // Segurar o dedo (0,6 s) no produto também tira um.
+      botao.addEventListener('pointerdown', () => { longo = false; clearTimeout(tempo); tempo = setTimeout(() => { longo = true; tirar(); }, 600); });
+      for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) botao.addEventListener(ev, () => clearTimeout(tempo));
+      botao.addEventListener('click', (ev) => { if (longo) { longo = false; ev.preventDefault(); return; } mais(); });
+      botao.addEventListener('contextmenu', (ev) => ev.preventDefault());
+      atualizadores.push(atualizar);
+      atualizar();
+      return raizTile;
+    }
+
+    function desenharGrade() {
+      atualizadores.length = 0;
+      const lista = filtrarProdutos(catalogoProdutos, { categoria: filtroCategoria, busca: filtroBusca });
+      grade.replaceChildren(...(lista.length ? lista.map(tile)
+        : [el('p', { class: 'suave' }, catalogoProdutos.length ? 'Nenhum produto encontrado.' : 'Ainda não há produtos no catálogo. Cadastre em Preços.')]));
+    }
+    function desenharChips() {
+      const cats = [...new Set(catalogoProdutos.map((c) => c.categoria))].sort((x, y) => Object.keys(ROTULO_CATEGORIA).indexOf(x) - Object.keys(ROTULO_CATEGORIA).indexOf(y));
+      chipsEl.replaceChildren(...['', ...cats].map((c) => {
+        const b = el('button', { type: 'button', class: 'chip-filtro', 'aria-pressed': String(c === filtroCategoria), 'data-categoria': c }, c ? ROTULO_CATEGORIA[c] : 'Todos');
+        b.addEventListener('click', () => { filtroCategoria = c; desenharChips(); desenharGrade(); });
+        return b;
+      }));
+    }
+    let tempoBusca = null;
+    busca.addEventListener('input', () => { clearTimeout(tempoBusca); tempoBusca = setTimeout(() => { filtroBusca = busca.value; desenharGrade(); }, 200); });
+
+    const raizPainel = el('div', { class: 'painel-produtos' }, busca, chipsEl, grade, barra);
+    atualizarBarra();
+    if (catalogoProdutos) { desenharChips(); desenharGrade(); } else {
+      grade.append(el('p', { class: 'carregando' }, 'Carregando produtos…'));
+      api('GET', '/api/catalogo').then((r) => {
+        catalogoProdutos = produtosDoCarrinho(r.itens);
+        if (minha === versaoTela && aba === 'produtos') { desenharChips(); desenharGrade(); }
+      }).catch((e) => grade.replaceChildren(caixaMensagem('erro', e.message)));
+    }
+    return raizPainel;
+  }
+
   async function salvar(lista) {
+    await esvaziarCarrinho(); // termina de enviar os toques do carrinho antes de enviar outra lista
     aplicar(await api('PUT', `/api/atendimentos/${atendimentoId}/pedido/itens`, { itens: paraEnvio(lista) }));
     desenhar();
   }
@@ -3266,8 +3525,9 @@ async function telaConta(atendimentoId, consulta = '') {
       }
     }
 
+    if (aba === 'produtos') { corpo.replaceChildren(cartaoPaciente, barraAbas(), painelProdutos(editavel)); return; }
     corpo.replaceChildren(...[
-      cartaoPaciente, sucesso, cartaoPassoComprovante(),
+      cartaoPaciente, barraAbas(), sucesso, cartaoPassoComprovante(),
       el('div', { class: 'cartao' },
         el('h2', {}, 'Itens da conta'),
         itens.length ? el('ul', { class: 'conta-itens' }, itens.map((i) => linhaItem(i, editavel))) : el('p', { class: 'suave' }, 'Nenhum item ainda. Toque em "Adicionar item".'),
@@ -3419,6 +3679,542 @@ async function telaCaixa() {
         : el('p', { class: 'suave' }, 'Nenhum pagamento recebido hoje ainda.')));
 }
 
+// ---------- Internação (baias, medicações e doses) ----------
+// A recepção só vê o quadro das baias (pet, tutor e dias). Medicação e detalhes: veterinário e suporte.
+
+// Campo "Remédio" com sugestões (nomes usados em receitas liberadas). Ao escolher, preenche remédio e dose.
+function campoRemedioInternacao(inicial, aoEscolher) {
+  const entrada = el('input', { id: 'med-remedio', type: 'text', maxlength: 120, autocomplete: 'off', autocapitalize: 'sentences', placeholder: 'ex.: Dipirona', value: inicial });
+  const chips = el('div', { class: 'chips-sugestao' });
+  let tempo = null; let numero = 0;
+  const minha = versaoTela;
+  entrada.addEventListener('input', () => {
+    clearTimeout(tempo);
+    const q = entrada.value.replace(/\*/g, '').trim();
+    if (q.length < 2) { numero += 1; chips.replaceChildren(); return; }
+    tempo = setTimeout(async () => {
+      const meu = ++numero;
+      try {
+        const { sugestoes } = await api('GET', '/api/sugestoes-receita?tipo=remedio&q=' + encodeURIComponent(q));
+        if (meu !== numero || minha !== versaoTela) return;
+        chips.replaceChildren(...sugestoes.slice(0, 5).map((s) => {
+          const b = el('button', { type: 'button', class: 'chip-sugestao' }, s.texto);
+          b.addEventListener('pointerdown', (ev) => ev.preventDefault());
+          b.addEventListener('click', () => { chips.replaceChildren(); aoEscolher(separarRemedioDose(s.texto)); });
+          return b;
+        }));
+      } catch { chips.replaceChildren(); }
+    }, 250);
+  });
+  entrada.addEventListener('blur', () => setTimeout(() => chips.replaceChildren(), 200));
+  return { entrada, chips };
+}
+
+// Campos de uma medicação (usados ao adicionar e ao editar). Devolve { raiz, ler() }; ler() lança erro se algo estiver errado.
+function camposMedicacao(inicial = {}, { comInicio = false } = {}) {
+  const CHIPS_INTERVALO = [4, 6, 8, 12, 24];
+  let intervalo = inicial.intervalo_horas ?? null;
+  let outroHorario = false;
+  const remedio = campoRemedioInternacao(inicial.remedio ?? '', ({ remedio: r, dose: d }) => { remedio.entrada.value = r; if (d) dose.value = d; dose.focus(); });
+  const dose = el('input', { id: 'med-dose', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'ex.: 250 mg', value: inicial.dose ?? '' });
+  const quantidade = el('input', { id: 'med-quantidade', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'ex.: 1 comprimido, 0,5 ml', value: inicial.quantidade ?? '' });
+  const via = el('select', { id: 'med-via' }, el('option', { value: '' }, 'Não informar'), ...VIAS.map((v) => el('option', { value: v }, v)));
+  if (inicial.via && !VIAS.includes(inicial.via)) via.append(el('option', { value: inicial.via }, inicial.via));
+  via.value = inicial.via !== undefined ? (inicial.via ?? '') : VIA_PADRAO;
+  const custom = el('input', { id: 'med-intervalo', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'outro, em horas', 'aria-label': 'Outro intervalo, em horas', class: 'intervalo-outro' });
+  const chipsIntervalo = CHIPS_INTERVALO.map((h) => {
+    const b = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'data-horas': String(h) }, `${h} h`);
+    b.addEventListener('click', () => { intervalo = h; custom.value = ''; marcar(); });
+    return b;
+  });
+  const marcar = () => { for (const b of chipsIntervalo) b.setAttribute('aria-checked', String(Number(b.dataset.horas) === intervalo && !custom.value)); };
+  custom.addEventListener('input', () => { const n = Number(custom.value.trim().replace(',', '.')); intervalo = custom.value.trim() && Number.isFinite(n) ? n : null; marcar(); });
+  if (intervalo !== null && !CHIPS_INTERVALO.includes(intervalo)) custom.value = String(intervalo).replace('.', ',');
+  marcar();
+  const duracao = el('input', { id: 'med-duracao', type: 'text', inputmode: 'numeric', autocomplete: 'off', placeholder: 'ex.: 5 (vazio = sem data para acabar)', value: inicial.duracao_dias ?? '' });
+  const observacao = el('input', { id: 'med-obs', type: 'text', maxlength: 300, autocomplete: 'off', placeholder: 'ex.: dar junto com comida', value: inicial.observacao ?? '' });
+
+  let blocoInicio = null;
+  let lerInicio = () => undefined;
+  if (comInicio) {
+    const quando = el('input', { id: 'med-inicio', type: 'datetime-local', value: isoParaCampoBahia(new Date().toISOString()) });
+    const area = el('div', { hidden: true }, quando);
+    const bAgora = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'aria-checked': 'true' }, 'Agora');
+    const bOutro = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'aria-checked': 'false', id: 'med-inicio-outro' }, 'Outro horário');
+    const troca = (outro) => { outroHorario = outro; bAgora.setAttribute('aria-checked', String(!outro)); bOutro.setAttribute('aria-checked', String(outro)); area.hidden = !outro; if (outro) quando.value = isoParaCampoBahia(new Date().toISOString()); };
+    bAgora.addEventListener('click', () => troca(false));
+    bOutro.addEventListener('click', () => troca(true));
+    blocoInicio = el('div', {}, el('label', {}, 'Hora da 1ª dose'), el('div', { class: 'grupo-chips' }, bAgora, bOutro), area,
+      el('p', { class: 'suave pequeno-texto' }, 'A 1ª dose conta como dada nesse horário; a próxima vem depois do intervalo.'));
+    lerInicio = () => {
+      if (!outroHorario) return undefined;
+      const iso = inicioBahiaParaISO(quando.value);
+      if (!iso) throw new Error('Informe o horário da 1ª dose.');
+      return iso;
+    };
+  }
+
+  const raiz = el('div', { class: 'med-campos' },
+    el('label', { for: 'med-remedio' }, 'Remédio'), remedio.entrada, remedio.chips,
+    el('div', { class: 'linha-dupla' },
+      el('div', {}, el('label', { for: 'med-dose' }, 'Dose'), dose),
+      el('div', {}, el('label', { for: 'med-quantidade' }, 'Quantidade'), quantidade)),
+    el('label', { for: 'med-via' }, 'Via'), via,
+    el('label', {}, 'A cada quantas horas?'),
+    el('div', { class: 'grupo-chips chips-intervalo', role: 'radiogroup', 'aria-label': 'Intervalo em horas' }, chipsIntervalo), custom,
+    el('label', { for: 'med-duracao' }, 'Por quantos dias? (opcional)'), duracao,
+    blocoInicio,
+    el('label', { for: 'med-obs' }, 'Observação (opcional)'), observacao);
+
+  function ler() {
+    const nome = remedio.entrada.value.trim();
+    if (!nome) throw new Error('Preencha o nome do remédio.');
+    if (intervalo === null || !(intervalo >= 0.5 && intervalo <= 168)) throw new Error('Escolha de quantas em quantas horas (de 0,5 a 168).');
+    const dias = duracao.value.trim();
+    if (dias && !/^\d{1,3}$/.test(dias)) throw new Error('A duração deve ser um número de dias (ou deixe em branco).');
+    return {
+      remedio: nome, dose: dose.value.trim(), quantidade: quantidade.value.trim(), via: via.value, intervalo_horas: intervalo,
+      duracao_dias: dias ? Number(dias) : null, observacao: observacao.value.trim(),
+      ...(lerInicio() ? { inicio_em: lerInicio() } : {}),
+    };
+  }
+  return { raiz, ler };
+}
+
+// Quem pode ver os detalhes: veterinário e suporte. A recepção só vê o quadro.
+const frasePilula = (pm) => pilulaProxima(pm, formatarHora);
+
+// ---------- Janela "Internar paciente" ----------
+// Escolhe a baia (se ainda não veio escolhida), o paciente (de hoje ou pela busca) e o motivo.
+function dialogoInternar({ baias, baiaId = null, pet = null, atendimentoId = null, motivo = '' }) {
+  return new Promise((resolve) => {
+    let baiaEsc = baiaId;
+    let escolhido = pet ? { id: pet.id, nome: pet.nome, tutor: pet.tutor, atendimentoId } : null;
+    const livres = baias.filter((b) => !b.ocupante);
+    const aviso = el('div', { 'aria-live': 'polite' });
+    const areaBaia = el('div');
+    const areaPaciente = el('div');
+    const entradaMotivo = el('input', { id: 'internar-motivo', type: 'text', maxlength: 300, autocomplete: 'off', placeholder: 'ex.: vômito e diarreia, fluidoterapia', value: motivo });
+    const ok = el('button', { type: 'button', id: 'internar-confirmar' }, 'Internar');
+    const nomeBaia = (id) => (baias.find((b) => b.id === id) || {}).nome || '';
+
+    function desenharBaia() {
+      if (baiaId) { areaBaia.replaceChildren(el('p', { class: 'internar-baia' }, el('strong', {}, nomeBaia(baiaId)))); return; }
+      if (!livres.length) { areaBaia.replaceChildren(caixaMensagem('erro', 'Não há baia livre no momento.')); return; }
+      areaBaia.replaceChildren(el('label', {}, 'Baia'), el('div', { class: 'grupo-chips', role: 'radiogroup', 'aria-label': 'Baia' },
+        livres.map((b) => {
+          const x = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'aria-checked': String(b.id === baiaEsc), 'data-baia': String(b.id) }, b.nome);
+          x.addEventListener('click', () => { baiaEsc = b.id; for (const y of areaBaia.querySelectorAll('[data-baia]')) y.setAttribute('aria-checked', String(y === x)); });
+          return x;
+        })));
+    }
+
+    function escolher(p, tutor, atId, motivoSugerido) {
+      escolhido = { id: p.id, nome: p.nome, tutor, atendimentoId: atId ?? null };
+      if (motivoSugerido && !entradaMotivo.value.trim()) entradaMotivo.value = motivoSugerido;
+      desenharPaciente();
+      entradaMotivo.focus();
+    }
+
+    function desenharPaciente() {
+      if (escolhido) {
+        areaPaciente.replaceChildren(el('label', {}, 'Paciente'),
+          el('div', { class: 'internar-escolhido' },
+            el('div', {}, el('strong', {}, escolhido.nome), el('span', { class: 'suave' }, ` · Tutor: ${escolhido.tutor}`)),
+            el('button', { type: 'button', class: 'secundario pequeno', id: 'internar-trocar', onclick: () => { escolhido = null; desenharPaciente(); } }, 'Trocar')));
+        return;
+      }
+      const hojeLista = el('div', { class: 'lista-catalogo' });
+      const resultados = el('div', { class: 'lista-catalogo' });
+      const busca = el('input', { id: 'internar-busca', type: 'search', autocomplete: 'off', placeholder: 'Nome do pet, do tutor ou telefone', 'aria-label': 'Buscar paciente' });
+      let tempo = null; let numero = 0;
+      busca.addEventListener('input', () => {
+        clearTimeout(tempo);
+        tempo = setTimeout(async () => {
+          const q = busca.value.trim();
+          const meu = ++numero;
+          if (q.length < 2) { resultados.replaceChildren(); return; }
+          try {
+            const { resultados: lista } = await api('GET', '/api/busca?q=' + encodeURIComponent(q));
+            if (meu !== numero) return;
+            const pets = lista.filter((r) => r.tipo === 'pet');
+            resultados.replaceChildren(...(pets.length ? pets.map((r) => el('button', { type: 'button', class: 'secundario item-catalogo', onclick: () => escolher(r.pet, r.tutor.nome, null, '') },
+              el('span', { class: 'item-catalogo-nome' }, `${r.pet.nome} · ${ROTULO_ESPECIE[r.pet.especie] || r.pet.especie}`), el('span', { class: 'suave' }, r.tutor.nome))) : [el('p', { class: 'suave' }, 'Nenhum pet encontrado.')]));
+          } catch (e) { resultados.replaceChildren(caixaMensagem('erro', e.message)); }
+        }, 300);
+      });
+      areaPaciente.replaceChildren(
+        el('label', {}, 'Paciente'),
+        el('p', { class: 'suave pequeno-texto' }, 'Na clínica agora:'), hojeLista,
+        el('label', { for: 'internar-busca' }, 'Ou busque outro paciente'), busca, resultados);
+      api('GET', '/api/hoje').then((h) => {
+        const lista = [...h.em_atendimento, ...h.aguardando];
+        hojeLista.replaceChildren(...(lista.length ? lista.map((a) => el('button', { type: 'button', class: 'secundario item-catalogo', onclick: () => escolher(a.pet, a.tutor.nome, a.id, a.motivo) },
+          el('span', { class: 'item-catalogo-nome' }, `${a.pet.nome} · ${ROTULO_STATUS[a.status]}`), el('span', { class: 'suave' }, a.tutor.nome))) : [el('p', { class: 'suave' }, 'Ninguém na clínica agora.')]));
+      }).catch(() => hojeLista.replaceChildren());
+    }
+
+    ok.addEventListener('click', async () => {
+      aviso.replaceChildren();
+      if (!baiaEsc) { aviso.replaceChildren(caixaMensagem('erro', 'Escolha a baia.')); return; }
+      if (!escolhido) { aviso.replaceChildren(caixaMensagem('erro', 'Escolha o paciente.')); return; }
+      if (!entradaMotivo.value.trim()) { aviso.replaceChildren(caixaMensagem('erro', 'Conte o motivo da internação.')); entradaMotivo.focus(); return; }
+      ok.disabled = true;
+      try {
+        const r = await api('POST', '/api/internacoes', { pet_id: escolhido.id, baia_id: baiaEsc, motivo: entradaMotivo.value.trim(), ...(escolhido.atendimentoId ? { atendimento_id: escolhido.atendimentoId } : {}) });
+        fechar(r.internacao.id);
+      } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    const d = el('dialog', { class: 'confirmacao dialogo-rolagem dialogo-largo' },
+      el('h2', {}, 'Internar paciente'), areaBaia, areaPaciente,
+      el('label', { for: 'internar-motivo' }, 'Motivo da internação'), entradaMotivo, aviso,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'internar-voltar', onclick: () => fechar(null) }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(null); });
+    desenharBaia();
+    desenharPaciente();
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+// ---------- Quadro das baias ----------
+async function telaInternacao(consulta = '') {
+  const minha = versaoTela;
+  const qs = new URLSearchParams(consulta);
+  const clinico = PODE_ATENDER.includes(usuario.papel);
+  const admin = !!usuario.admin;
+  let dados = null;
+  const erro = el('div');
+  const resumoEl = el('p', { class: 'hoje-data' });
+  const grade = el('div', { class: 'baias-grade' }, el('p', { class: 'carregando' }, 'Carregando…'));
+  const desativadas = el('div');
+  let abriuInternar = false;
+  const adicionar = admin ? el('button', { type: 'button', class: 'secundario', id: 'adicionar-baia', onclick: () => dialogoCampo({
+    titulo: 'Nova baia', rotulo: 'Nome da baia', rotuloOk: 'Adicionar baia', inicial: `Baia ${(dados ? dados.baias.length + dados.desativadas.length : 0) + 1}`,
+    aoConfirmar: async (nome) => { if (!nome.trim()) throw new Error('Preencha o nome da baia.'); await api('POST', '/api/baias', { nome: nome.trim() }); atualizar(); },
+  }) }, icone('mais', 18, 2.6), 'Adicionar baia') : null;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'),
+    el('div', { class: 'hoje-topo' }, el('div', {}, el('h1', {}, 'Internação'), resumoEl), el('div', { class: 'hoje-acoes' }, adicionar)),
+    erro, grade, desativadas);
+  raiz.classList.add('larga');
+
+  const abrirInternar = async (extra = {}) => {
+    const id = await dialogoInternar({ baias: dados.baias, ...extra });
+    if (id) irPara(`#/internacao/${id}`);
+  };
+
+  function cartaoBaia(b) {
+    const controlesAdmin = admin ? el('div', { class: 'baia-admin' },
+      el('button', { type: 'button', class: 'secundario pequeno renomear-baia', onclick: () => dialogoCampo({
+        titulo: 'Renomear baia', rotulo: 'Nome da baia', rotuloOk: 'Salvar nome', inicial: b.nome,
+        aoConfirmar: async (nome) => { if (!nome.trim()) throw new Error('Preencha o nome da baia.'); await api('PATCH', `/api/baias/${b.id}`, { nome: nome.trim() }); atualizar(); },
+      }) }, 'Renomear'),
+      b.ocupante ? null : el('button', { type: 'button', class: 'secundario pequeno desativar-baia', onclick: async () => {
+        if (!(await confirmar(`Desativar a ${b.nome}?`, 'Ela some do quadro até ser reativada. Só dá para desativar baia livre.', 'Sim, desativar'))) return;
+        try { await api('PATCH', `/api/baias/${b.id}`, { ativa: false }); atualizar(); } catch (e) { erro.replaceChildren(caixaMensagem('erro', e.message)); }
+      } }, 'Desativar')) : null;
+
+    if (!b.ocupante) {
+      return el('article', { class: 'baia livre', 'data-baia': String(b.id) },
+        el('div', { class: 'baia-nome' }, b.nome),
+        el('p', { class: 'baia-livre-texto' }, 'Livre'),
+        clinico ? el('button', { type: 'button', class: 'secundario baia-internar', onclick: () => abrirInternar({ baiaId: b.id }) }, 'Internar paciente') : null,
+        controlesAdmin);
+    }
+    const o = b.ocupante;
+    const pm = o.proxima_medicacao ? frasePilula(o.proxima_medicacao) : null;
+    const abrir = () => irPara(`#/internacao/${o.internacao_id}`);
+    const conteudo = el('div', clinico ? { class: 'baia-corpo', role: 'link', tabindex: '0', 'aria-label': `Abrir ${o.pet.nome} na ${b.nome}`, onclick: abrir } : { class: 'baia-corpo' },
+      el('div', { class: 'baia-nome' }, b.nome),
+      el('div', { class: 'baia-pet' }, miniatura(o.pet.foto_id, o.pet.nome, 'miniatura'), el('strong', { class: 'baia-pet-nome' }, o.pet.nome)),
+      el('span', { class: 'baia-tutor' }, `Tutor: ${o.tutor.nome}`),
+      el('span', { class: 'baia-dia' }, ordinalDia(o.dias), el('span', { class: 'suave' }, ` · ${o.horas} h`)),
+      clinico && o.motivo ? el('span', { class: 'baia-motivo' }, o.motivo) : null,
+      clinico ? (pm ? el('span', { class: 'pilula-med ' + pm.classe }, pm.texto) : el('span', { class: 'pilula-med sem' }, 'Sem medicação')) : null);
+    if (clinico) conteudo.addEventListener('keydown', (ev) => { if (ev.target === conteudo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrir(); } });
+    const atrasada = o.proxima_medicacao && o.proxima_medicacao.status === 'atrasada';
+    return el('article', { class: 'baia ocupada' + (atrasada ? ' com-atraso' : ''), 'data-baia': String(b.id) }, conteudo, controlesAdmin);
+  }
+
+  function desenhar() {
+    if (!dados) return;
+    resumoEl.textContent = resumoInternados(dados.resumo);
+    grade.replaceChildren(...dados.baias.map(cartaoBaia));
+    desativadas.replaceChildren(...(dados.desativadas.length ? [el('div', { class: 'cartao' }, el('h2', {}, 'Baias desativadas'),
+      el('ul', { class: 'lista-simples' }, dados.desativadas.map((b) => el('li', { class: 'baia-desativada' }, el('span', {}, b.nome),
+        el('button', { type: 'button', class: 'secundario pequeno', onclick: async () => { try { await api('PATCH', `/api/baias/${b.id}`, { ativa: true }); atualizar(); } catch (e) { erro.replaceChildren(caixaMensagem('erro', e.message)); } } }, 'Reativar')))))] : []));
+  }
+
+  async function atualizar() {
+    if (minha !== versaoTela) return;
+    try {
+      dados = await api('GET', '/api/internacao');
+      if (minha !== versaoTela) return;
+      erro.replaceChildren();
+      desenhar();
+      // Vindo da ficha do pet ou do atendimento ("Internar paciente"): já abre a janela com o paciente escolhido.
+      if (!abriuInternar && clinico && qs.get('internar')) {
+        abriuInternar = true;
+        const { pet, tutor } = await api('GET', `/api/pets/${Number(qs.get('internar'))}`);
+        if (minha === versaoTela) abrirInternar({ pet: { id: pet.id, nome: pet.nome, tutor: tutor.nome }, atendimentoId: Number(qs.get('atendimento')) || null });
+      }
+    } catch (e) {
+      if (minha !== versaoTela) return;
+      if (e.status === 401) { usuario = null; telaEntrar(); return; }
+      erro.replaceChildren(caixaMensagem('erro', e.message));
+    }
+  }
+  // Atualiza sozinho a cada 30 s enquanto a tela está visível.
+  const parar = () => minha !== versaoTela;
+  const t30 = setInterval(() => { if (parar()) { clearInterval(t30); return; } if (document.visibilityState === 'visible') atualizar(); }, 30000);
+  const aoVoltar = () => { if (parar()) { document.removeEventListener('visibilitychange', aoVoltar); return; } if (document.visibilityState === 'visible') atualizar(); };
+  document.addEventListener('visibilitychange', aoVoltar);
+  atualizar();
+}
+
+// ---------- Tela da baia (internação de um paciente) ----------
+async function telaInternacaoDetalhe(id) {
+  const minha = versaoTela;
+  if (!PODE_ATENDER.includes(usuario.papel)) return telaInternacao(); // a recepção só vê o quadro
+  carregando();
+  let d;
+  try { d = await api('GET', `/api/internacoes/${id}`); } catch (e) { if (minha === versaoTela) telaErro(e, '#/internacao'); return; }
+  if (minha !== versaoTela) return;
+
+  const erro = el('div');
+  const cabeca = el('div');
+  const botoesTopo = el('div', { class: 'acoes baia-acoes' });
+  const faixaDose = el('div', { 'aria-live': 'polite' });
+  const medsEl = el('div', { class: 'meds-area' });
+  const formArea = el('div');
+  let tempoFaixa = null;
+  let formAberto = false;
+  const evolucao = secaoProntuario({
+    petId: d.internacao.pet.id, internacaoId: id, titulo: 'Evolução', mostrarLigacoes: false,
+    aoMudar: async () => { await recarregar(); },
+  });
+  const aberta = () => d.internacao.status === 'internado';
+
+  function aplicar(r) {
+    d = r;
+    desenharCabeca();
+    desenharMeds();
+    evolucao.definirNotas(d.notas);
+  }
+  async function recarregar() {
+    try {
+      const r = await api('GET', `/api/internacoes/${id}`);
+      if (minha === versaoTela) aplicar(r);
+    } catch (e) {
+      if (minha !== versaoTela) return;
+      if (e.status === 401) { usuario = null; telaEntrar(); return; }
+      erro.replaceChildren(caixaMensagem('erro', e.message));
+    }
+  }
+  const mostrarErro = (e) => { erro.replaceChildren(caixaMensagem('erro', e.message)); if (e.status === 409) recarregar(); };
+
+  function desenharCabeca() {
+    const i = d.internacao;
+    const desde = `${formatarDia(i.inicio_em).slice(0, 5)} ${formatarHora(i.inicio_em)}`;
+    cabeca.replaceChildren(el('div', { class: 'cartao baia-cabeca' },
+      miniatura(i.pet.foto_id, i.pet.nome, 'foto-ficha'),
+      el('div', { class: 'baia-cabeca-info' },
+        el('div', { class: 'baia-cabeca-linha' },
+          el('a', { class: 'baia-cabeca-nome', href: `#/pet/${i.pet.id}` }, i.pet.nome),
+          el('span', { class: 'etiqueta', id: 'baia-chip' }, i.baia.nome)),
+        el('span', { class: 'suave' }, `Tutor: ${i.tutor.nome}`),
+        el('strong', { class: 'baia-cabeca-tempo' }, `${ordinalDia(i.dias)} · Internado ${tempoInternado(i.horas)} (desde ${desde})`),
+        el('span', {}, `Motivo: ${i.motivo}`),
+        i.status !== 'internado'
+          ? el('span', { class: 'aviso-peso' }, `${{ alta: 'Alta', obito: 'Óbito', transferido: 'Transferido' }[i.status]} em ${formatarDataHora(i.alta_em)}${i.encerrado_por_nome ? ' · ' + i.encerrado_por_nome : ''}${i.observacao_alta ? ' · ' + i.observacao_alta : ''}`)
+          : null)));
+    botoesTopo.replaceChildren(...[
+      aberta() ? el('button', { type: 'button', class: 'secundario', id: 'mudar-baia', onclick: mudarBaia }, 'Mudar de baia') : null,
+      aberta() ? el('button', { type: 'button', class: 'secundario', id: 'dar-alta', onclick: darAlta }, 'Dar alta') : null,
+      i.atendimento_id ? el('button', { type: 'button', class: 'secundario', id: 'produtos-conta', onclick: () => irPara(`#/conta/${i.atendimento_id}?aba=produtos`) }, 'Produtos / Conta') : null,
+      el('button', { type: 'button', class: 'secundario', onclick: () => irPara(`#/pet/${i.pet.id}`) }, 'Ficha do paciente'),
+    ].filter(Boolean));
+  }
+
+  // ----- janelas -----
+  async function mudarBaia() {
+    let quadro;
+    try { quadro = await api('GET', '/api/internacao'); } catch (e) { mostrarErro(e); return; }
+    const livres = quadro.baias.filter((b) => !b.ocupante);
+    if (!livres.length) { erro.replaceChildren(caixaMensagem('erro', 'Não há outra baia livre.')); return; }
+    let escolhida = null;
+    const aviso = el('div');
+    const ok = el('button', { type: 'button', id: 'mover-confirmar' }, 'Mudar de baia');
+    const chips = livres.map((b) => {
+      const x = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'aria-checked': 'false', 'data-baia': String(b.id) }, b.nome);
+      x.addEventListener('click', () => { escolhida = b.id; for (const y of chips) y.setAttribute('aria-checked', String(y === x)); });
+      return x;
+    });
+    const dlg = el('dialog', { class: 'confirmacao' }, el('h2', {}, `Mudar ${d.internacao.pet.nome} de baia`),
+      el('p', { class: 'suave' }, `Agora está na ${d.internacao.baia.nome}. Escolha uma baia livre:`),
+      el('div', { class: 'grupo-chips', role: 'radiogroup', 'aria-label': 'Nova baia' }, chips), aviso,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'mover-voltar' }, 'Voltar')));
+    const fechar = () => { dlg.close(); dlg.remove(); };
+    dlg.querySelector('#mover-voltar').addEventListener('click', fechar);
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+    ok.addEventListener('click', async () => {
+      if (!escolhida) { aviso.replaceChildren(caixaMensagem('erro', 'Escolha a nova baia.')); return; }
+      ok.disabled = true;
+      try { aplicar(await api('POST', `/api/internacoes/${id}/mover`, { baia_id: escolhida })); fechar(); mostrarToast('Baia alterada'); } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
+  function darAlta() {
+    let status = 'alta';
+    const aviso = el('div');
+    const obs = el('textarea', { id: 'alta-observacao', rows: 3, maxlength: 1000, placeholder: 'ex.: voltou a comer; retorno em 3 dias' });
+    const ok = el('button', { type: 'button', id: 'alta-confirmar' }, 'Confirmar');
+    const rotulos = { alta: 'Alta', obito: 'Óbito', transferido: 'Transferido' };
+    const chips = Object.entries(rotulos).map(([chave, rotulo]) => {
+      const x = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'aria-checked': String(chave === status), 'data-status': chave }, rotulo);
+      x.addEventListener('click', () => { status = chave; for (const y of chips) y.setAttribute('aria-checked', String(y === x)); });
+      return x;
+    });
+    const dlg = el('dialog', { class: 'confirmacao dialogo-rolagem' }, el('h2', {}, `Encerrar a internação de ${d.internacao.pet.nome}`),
+      el('p', { class: 'suave' }, 'A baia fica livre e as medicações em aberto são encerradas.'),
+      el('div', { class: 'grupo-chips', role: 'radiogroup', 'aria-label': 'Motivo do encerramento' }, chips),
+      el('label', { for: 'alta-observacao' }, 'Observação'), obs, aviso,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'alta-voltar' }, 'Voltar')));
+    const fechar = () => { dlg.close(); dlg.remove(); };
+    dlg.querySelector('#alta-voltar').addEventListener('click', fechar);
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+    ok.addEventListener('click', async () => {
+      if (status !== 'alta' && !obs.value.trim()) { aviso.replaceChildren(caixaMensagem('erro', 'Conte o que aconteceu na observação.')); return; }
+      ok.disabled = true;
+      try { await api('POST', `/api/internacoes/${id}/encerrar`, { status, observacao: obs.value.trim() }); fechar(); irPara('#/internacao'); } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
+  function historico(m) {
+    const dlg = el('dialog', { class: 'confirmacao dialogo-rolagem' }, el('h2', {}, `Doses de ${m.remedio}`),
+      m.doses.length
+        ? el('ul', { class: 'lista-simples' }, m.doses.map((x) => el('li', {}, el('strong', {}, `${formatarDia(x.feita_em).slice(0, 5)} às ${formatarHora(x.feita_em)}`), ` · ${x.feita_por.nome}`, x.observacao ? el('span', { class: 'suave' }, ` · ${x.observacao}`) : null)))
+        : el('p', { class: 'suave' }, 'Nenhuma dose registrada ainda. A contagem parte do horário da 1ª dose.'),
+      el('div', { class: 'acoes' }, el('button', { type: 'button', id: 'historico-fechar' }, 'Fechar')));
+    const fechar = () => { dlg.close(); dlg.remove(); };
+    dlg.querySelector('#historico-fechar').addEventListener('click', fechar);
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
+  function editarMedicacao(m) {
+    const campos = camposMedicacao(m);
+    const aviso = el('div');
+    const ok = el('button', { type: 'button', id: 'med-salvar-edicao' }, 'Salvar');
+    const dlg = el('dialog', { class: 'confirmacao dialogo-rolagem dialogo-largo' }, el('h2', {}, `Editar ${m.remedio}`), campos.raiz, aviso,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'med-voltar' }, 'Voltar')));
+    const fechar = () => { dlg.close(); dlg.remove(); };
+    dlg.querySelector('#med-voltar').addEventListener('click', fechar);
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+    ok.addEventListener('click', async () => {
+      aviso.replaceChildren();
+      ok.disabled = true;
+      try { aplicar(await api('PATCH', `/api/internacao-medicacoes/${m.id}`, campos.ler())); fechar(); mostrarToast('Medicação atualizada'); } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+  }
+
+  async function encerrarMedicacao(m) {
+    if (!(await confirmar(`Encerrar ${m.remedio}?`, 'Ele sai da lista de medicações em andamento. O histórico de doses continua guardado.', 'Sim, encerrar'))) return;
+    try { aplicar(await api('PATCH', `/api/internacao-medicacoes/${m.id}`, { encerrar: true })); mostrarToast(`Encerrado: ${m.remedio}`); } catch (e) { mostrarErro(e); }
+  }
+
+  // "Dei agora": um toque. Aparece um aviso com "Desfazer" por 1 minuto (caso tenha sido engano).
+  async function dar(m, botao) {
+    botao.disabled = true;
+    erro.replaceChildren();
+    try {
+      const r = await api('POST', `/api/internacao-medicacoes/${m.id}/administrar`, {});
+      aplicar(r);
+      clearTimeout(tempoFaixa);
+      const desfazer = el('button', { type: 'button', class: 'secundario pequeno', id: 'desfazer-dose', onclick: async () => {
+        desfazer.disabled = true;
+        try { aplicar(await api('POST', `/api/administracoes/${r.administracao_id}/desfazer`, {})); faixaDose.replaceChildren(); mostrarToast('Dose desfeita'); } catch (e) { desfazer.disabled = false; mostrarErro(e); }
+      } }, 'Desfazer');
+      faixaDose.replaceChildren(el('div', { class: 'mensagem ok faixa-dose', role: 'status' }, el('span', {}, `Dose de ${m.remedio} registrada às ${formatarHora(r.agora)}.`), desfazer));
+      tempoFaixa = setTimeout(() => faixaDose.replaceChildren(), 60000);
+    } catch (e) { botao.disabled = false; mostrarErro(e); }
+  }
+
+  // ----- tabela (computador) / cartões (celular) de medicações -----
+  function linhaMedicacao(m) {
+    const st = textoStatusMedicacao(m, formatarHora);
+    const ativa = m.situacao === 'ativa';
+    const celula = (rotulo, ...conteudo) => el('td', { 'data-label': rotulo }, ...conteudo);
+    const frequencia = [textoIntervalo(m.intervalo_horas), m.duracao_dias ? `dia ${m.dia_tratamento} de ${m.duracao_dias}` : null].filter(Boolean);
+    return el('tr', { class: 'med-linha ' + (ativa ? st.classe : 'encerrada'), 'data-med': String(m.id) },
+      el('td', { class: 'med-remedio', 'data-label': 'Remédio' }, el('strong', {}, m.remedio), m.observacao ? el('span', { class: 'suave med-obs' }, m.observacao) : null),
+      celula('Dose', m.dose || '—'),
+      celula('Quantidade', m.quantidade || '—'),
+      celula('Via', m.via || '—'),
+      celula('Frequência', el('span', {}, frequencia[0]), frequencia[1] ? el('span', { class: 'med-dia' }, frequencia[1]) : null),
+      celula('Última dose', m.ultima_em ? `${formatarHora(m.ultima_em)} por ${m.ultima_por}` : 'Nenhuma ainda'),
+      celula('Próxima', ativa ? el('span', { class: 'pilula-med ' + st.classe }, st.texto) : el('span', { class: 'pilula-med sem' }, st.texto)),
+      el('td', { class: 'med-acoes' },
+        ativa && aberta() ? el('button', { type: 'button', class: 'dei-agora', 'data-med': String(m.id), onclick: (ev) => dar(m, ev.currentTarget) }, icone('check', 22, 3), 'Dei agora') : null,
+        el('div', { class: 'med-links' },
+          el('button', { type: 'button', class: 'secundario pequeno', onclick: () => historico(m) }, 'Histórico'),
+          ativa && aberta() ? el('button', { type: 'button', class: 'secundario pequeno', onclick: () => editarMedicacao(m) }, 'Editar') : null,
+          ativa && aberta() ? el('button', { type: 'button', class: 'secundario pequeno', onclick: () => encerrarMedicacao(m) }, 'Encerrar') : null)));
+  }
+
+  function desenharMeds() {
+    const emAndamento = d.medicacoes.filter((m) => m.situacao === 'ativa');
+    const outras = d.medicacoes.filter((m) => m.situacao !== 'ativa');
+    const cabecas = ['Remédio', 'Dose', 'Quantidade', 'Via', 'Frequência', 'Última dose', 'Próxima', ''];
+    medsEl.replaceChildren(...[
+      emAndamento.length
+        ? el('table', { class: 'med-tabela' }, el('thead', {}, el('tr', {}, cabecas.map((c) => el('th', { scope: 'col' }, c)))), el('tbody', {}, emAndamento.map(linhaMedicacao)))
+        : el('p', { class: 'suave' }, aberta() ? 'Nenhuma medicação em andamento. Toque em "Adicionar medicação".' : 'Nenhuma medicação em andamento.'),
+      outras.length ? el('details', { class: 'meds-encerradas' }, el('summary', {}, `Encerradas ou concluídas (${outras.length})`),
+        el('table', { class: 'med-tabela' }, el('thead', {}, el('tr', {}, cabecas.map((c) => el('th', { scope: 'col' }, c)))), el('tbody', {}, outras.map(linhaMedicacao)))) : null,
+    ].filter(Boolean));
+  }
+
+  // ----- adicionar medicação -----
+  function desenharForm() {
+    if (!formAberto || !aberta()) { formArea.replaceChildren(); return; }
+    const campos = camposMedicacao({}, { comInicio: true });
+    const aviso = el('div');
+    const ok = el('button', { type: 'button', id: 'med-adicionar-confirmar', class: 'grande' }, 'Adicionar medicação');
+    ok.addEventListener('click', async () => {
+      aviso.replaceChildren();
+      ok.disabled = true;
+      try {
+        aplicar(await api('POST', `/api/internacoes/${id}/medicacoes`, campos.ler()));
+        formAberto = false; desenharForm(); mostrarToast('Medicação adicionada');
+      } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    formArea.replaceChildren(el('div', { class: 'cartao form-medicacao' }, el('h2', {}, 'Nova medicação'), campos.raiz, aviso,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'med-adicionar-cancelar', onclick: () => { formAberto = false; desenharForm(); } }, 'Cancelar'))));
+  }
+
+  mostrar(cabecalho(), botaoVoltar('#/internacao', 'Quadro das baias'), cabeca, botoesTopo, erro, faixaDose,
+    el('div', { class: 'secao-titulo medicacoes-titulo' }, el('h2', { class: 'titulo-secao' }, 'Medicações'),
+      aberta() ? el('button', { type: 'button', class: 'secundario', id: 'med-adicionar', onclick: () => { formAberto = !formAberto; desenharForm(); if (formAberto) formArea.scrollIntoView({ block: 'nearest' }); } }, icone('mais', 18, 2.6), 'Adicionar medicação') : null),
+    medsEl, formArea, evolucao.raiz);
+  raiz.classList.add('larga');
+  aplicar(d);
+
+  // Atualiza sozinho a cada 30 s (só enquanto a tela está visível). A caixa de anotação não é apagada.
+  const parar = () => minha !== versaoTela;
+  const t30 = setInterval(() => { if (parar()) { clearInterval(t30); return; } if (document.visibilityState === 'visible') recarregar(); }, 30000);
+  const aoVoltar = () => { if (parar()) { document.removeEventListener('visibilitychange', aoVoltar); return; } if (document.visibilityState === 'visible') recarregar(); };
+  document.addEventListener('visibilitychange', aoVoltar);
+}
+
 // ---------- roteador ----------
 // Tela "Notificações": ativar, testar ou desativar neste aparelho.
 async function telaNotificacoes() {
@@ -3454,7 +4250,8 @@ function rotear() {
   if (rota === 'caixa') return usuario.admin ? telaCaixa() : telaHoje();
   if (rota === 'notificacoes') return telaNotificacoes();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();
-  if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n);
+  if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n, consulta);
+  if (rota === 'internacao') return n ? telaInternacaoDetalhe(n) : telaInternacao(consulta);
   if (rota === 'tutor' && n) {
     if (acao === 'editar') return telaEditarTutor(n);
     if (acao === 'novo-pet') return telaNovoPet(n);

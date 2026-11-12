@@ -6,6 +6,9 @@ Tempo estimado: 20 a 30 minutos.
 Ao final, o sistema vai estar no ar num endereço como `https://vetclin.SEU-NOME.workers.dev`,
 e toda atualização enviada ao GitHub será publicada sozinha.
 
+> **Endereço do sistema da Vetclin:** <https://vetclin.vetclinvila.workers.dev/>
+> Não existe cadastro aberto: cada pessoa recebe login e senha criados por um administrador em **Usuários → Novo usuário**.
+
 ---
 
 ## Passo 1 — Criar a conta da Cloudflare (no nome da clínica)

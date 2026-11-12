@@ -21,11 +21,12 @@ import { hashSenha } from '../src/auth.js';
 const ORDEM = [
   'usuarios', 'tutores', 'fotos', 'pets', 'atendimentos', 'catalogo', 'pedidos', 'itens_pedido', 'pagamentos',
   'receitas', 'receita_itens', 'sugestoes_receita', 'configuracoes', 'contadores', 'registro_acoes',
+  'baias', 'internacoes', 'internacao_medicacoes', 'administracoes', 'prontuario',
 ];
 // Colunas que apontam para a própria tabela: entram vazias e são preenchidas depois (a linha apontada pode vir mais adiante).
 const AUTO_REFERENCIA = { tutores: 'mesclado_em_id', receitas: 'receita_anterior_id' };
 // Tabelas que a migração já preenche com valores iniciais: o INSERT substitui esses valores.
-const COM_VALORES_INICIAIS = ['catalogo', 'configuracoes', 'contadores'];
+const COM_VALORES_INICIAIS = ['catalogo', 'configuracoes', 'contadores', 'baias'];
 
 export function literal(v) {
   if (v === null || v === undefined) return 'NULL';

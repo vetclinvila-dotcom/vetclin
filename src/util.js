@@ -86,6 +86,12 @@ export function agoraISO() {
   return new Date().toISOString();
 }
 
+// "Agora" para as regras de prontuário e internação. Nos testes, "env.AGORA_TESTE" (uma função que
+// devolve a data/hora) permite fixar o relógio; em produção essa função não existe e vale a hora real.
+export function agoraDe(env) {
+  return env && typeof env.AGORA_TESTE === 'function' ? new Date(env.AGORA_TESTE()) : new Date();
+}
+
 // Compara dois textos sem revelar (pelo tempo) onde eles diferem.
 export function comparacaoSegura(a, b) {
   const enc = new TextEncoder();
