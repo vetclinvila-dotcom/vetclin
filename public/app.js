@@ -2595,7 +2595,7 @@ function secaoDadosClinica() {
     try {
       const c = await api('GET', '/api/configuracoes/clinica');
       const form = formulario(async (v) => {
-        await api('PATCH', '/api/configuracoes/clinica', { clinica_nome: v.clinica_nome, clinica_endereco: v.clinica_endereco, clinica_telefone: v.clinica_telefone, clinica_cidade: v.clinica_cidade });
+        await api('PATCH', '/api/configuracoes/clinica', { clinica_nome: v.clinica_nome, clinica_endereco: v.clinica_endereco, clinica_telefone: v.clinica_telefone, clinica_cidade: v.clinica_cidade, consulta_hora_corte: v.consulta_hora_corte });
         form.querySelector('.ok-clinica').replaceChildren(caixaMensagem('ok', 'Dados da clínica salvos.'));
         form.querySelector('button[type="submit"]').disabled = false;
       },
@@ -2604,6 +2604,7 @@ function secaoDadosClinica() {
         campo('Endereço', 'clinica_endereco', { value: c.clinica_endereco, autocomplete: 'off' }),
         campo('Telefone', 'clinica_telefone', { value: c.clinica_telefone, type: 'tel', autocomplete: 'off' }),
         campo('Cidade (aparece na data)', 'clinica_cidade', { value: c.clinica_cidade, autocomplete: 'off' }),
+        campo('Consulta: horário em que passa a valer o preço da noite', 'consulta_hora_corte', { type: 'time', value: c.consulta_hora_corte || '18:00' }),
         el('div', { class: 'ok-clinica' }),
         el('button', { type: 'submit' }, 'Salvar dados da clínica'));
       caixa.replaceChildren(el('h2', {}, 'Dados da clínica'), form);
@@ -3001,10 +3002,11 @@ async function telaPrecos() {
     return el('div', { class: 'preco-linha' + (c.ativo ? '' : ' inativo') },
       el('div', { class: 'preco-info' },
         el('strong', {}, c.nome, c.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Desativado')),
-        c.categoria === 'consulta' ? el('span', { class: 'detalhe' }, 'Usado na conta pelo horário da consulta') : null),
+        c.categoria === 'consulta' ? el('span', { class: 'detalhe' }, usuario.admin ? 'Usado na conta pelo horário da consulta' : 'Usado na conta pelo horário da consulta · só administradores mudam este valor') : null),
       el('strong', { class: 'preco-valor' }, formatarReais(c.preco_centavos)),
       el('div', { class: 'preco-botoes' },
-        el('button', { type: 'button', class: 'secundario editar-preco', onclick: async () => {
+        // Valor das consultas: só administradores editam (decisão da clínica).
+        c.categoria === 'consulta' && !usuario.admin ? null : el('button', { type: 'button', class: 'secundario editar-preco', onclick: async () => {
           if (await dialogoItemCatalogo(c, (v) => api('PATCH', `/api/catalogo/${c.id}`, v))) carregar();
         } }, 'Editar'),
         c.categoria === 'consulta' ? null : el('button', { type: 'button', class: 'secundario', onclick: async () => {

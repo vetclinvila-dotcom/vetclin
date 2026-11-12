@@ -79,7 +79,12 @@ async function catalogoAlterar(request, env, id) {
   if (c.ativo !== undefined) novo.ativo = c.ativo ? 1 : 0;
 
   // Os dois preços de consulta são usados pela regra do horário: podem mudar de nome e de preço, mas não podem sumir.
-  if ((await idsDaConsulta(env)).includes(id) && (novo.categoria !== 'consulta' || novo.ativo !== 1)) {
+  const ehConsultaFixa = (await idsDaConsulta(env)).includes(id);
+  // Valor e nome das duas consultas: só administradores (decisão da clínica).
+  if (ehConsultaFixa && !u.admin && (novo.preco_centavos !== antes.preco_centavos || novo.nome !== antes.nome)) {
+    throw new ErroHttp(403, 'Só administradores podem mudar o valor da consulta.');
+  }
+  if (ehConsultaFixa && (novo.categoria !== 'consulta' || novo.ativo !== 1)) {
     throw new ErroHttp(409, 'Os dois preços de consulta não podem ser desativados nem mudar de categoria. Altere apenas o preço.');
   }
   if (novo.ativo === 1 && (novo.nome !== antes.nome || novo.categoria !== antes.categoria || antes.ativo !== 1) && await duplicado(env, novo.nome, novo.categoria, id)) {

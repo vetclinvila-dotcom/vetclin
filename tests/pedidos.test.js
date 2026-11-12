@@ -84,8 +84,9 @@ test('consulta: os preços vêm do catálogo, pelo horário em que o atendimento
   p = (await verPedido(a, at)).dados;
   assert.deepEqual([p.pedido.itens[0].descricao, p.pedido.itens[0].preco_unitario_centavos], ['Consulta (após 18h)', 20000]);
   assert.match(p.automaticos.consulta.explicacao, /iniciado às 18:00 → valor após as 18h/);
-  // mudar o preço no catálogo muda a conta (nada fixo no código)
-  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/2', { cookie: a.recepcao, corpo: { preco_centavos: 25000 } })).status, 200);
+  // mudar o preço no catálogo muda a conta (nada fixo no código) — só administrador muda o valor da consulta
+  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/2', { cookie: a.recepcao, corpo: { preco_centavos: 25000 } })).status, 403);
+  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/2', { cookie: a.vet, corpo: { preco_centavos: 25000 } })).status, 200);
   assert.equal((await verPedido(a, at)).dados.pedido.itens[0].preco_unitario_centavos, 25000);
 });
 
@@ -519,7 +520,9 @@ test('catálogo: validações, duplicados, 404 e proteção dos preços de consu
   // consultas base: só preço e nome
   assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/1', { cookie: a.recepcao, corpo: { ativo: false } })).status, 409);
   assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/2', { cookie: a.recepcao, corpo: { categoria: 'outro' } })).status, 409);
-  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/1', { cookie: a.recepcao, corpo: { preco_centavos: 11000 } })).status, 200);
+  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/1', { cookie: a.recepcao, corpo: { preco_centavos: 11000 } })).status, 403);
+  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/1', { cookie: a.vet2, corpo: { nome: 'Consulta dia' } })).status, 403);
+  assert.equal((await chamar(a.env, 'PATCH', '/api/catalogo/1', { cookie: a.recAdmin, corpo: { preco_centavos: 11000 } })).status, 200);
   // não existe rota pública de catálogo
   const semLogin = await chamar(a.env, 'GET', '/api/catalogo?categoria=exame');
   assert.equal(semLogin.status, 401);
@@ -575,4 +578,17 @@ test('migração 0008 aplica sobre a 0007 mantendo pedidos e pagamentos existent
   assert.equal(b.prepare('SELECT enviado_por FROM pedidos WHERE id = 1').get().enviado_por, null);
   // o índice impede dois pedidos ativos
   assert.throws(() => b.prepare(`INSERT INTO pedidos (atendimento_id, criado_por, criado_em, atualizado_em) VALUES (1, 1, 'x', 'x')`).run(), /UNIQUE/);
+});
+
+test('horário de corte da consulta: só administrador muda, formato validado, e a conta segue o novo horário', async () => {
+  const a = await ambiente();
+  assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.recepcao, corpo: { consulta_hora_corte: '17:00' } })).status, 403);
+  assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet2, corpo: { consulta_hora_corte: '17:00' } })).status, 403);
+  for (const ruim of ['25:00', '17h', '7:00', '']) {
+    assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet, corpo: { consulta_hora_corte: ruim } })).status, 400, ruim);
+  }
+  const ok = await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet, corpo: { consulta_hora_corte: '17:00' } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.dados.consulta_hora_corte, '17:00');
+  assert.equal(a.env.DB.bruto.prepare(`SELECT valor FROM configuracoes WHERE chave = 'consulta_hora_corte'`).get().valor, '17:00');
 });

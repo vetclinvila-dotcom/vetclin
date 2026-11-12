@@ -402,14 +402,14 @@ test('sugestões aprendidas das receitas liberadas (sem acento, contagem, asteri
 test('dados da clínica: qualquer um lê, só admin altera', async () => {
   const a = await ambiente();
   const ler = await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.recepcao });
-  assert.deepEqual(ler.dados, { clinica_nome: 'Vetclin', clinica_endereco: '', clinica_telefone: '', clinica_cidade: '' });
+  assert.deepEqual(ler.dados, { clinica_nome: 'Vetclin', clinica_endereco: '', clinica_telefone: '', clinica_cidade: '', consulta_hora_corte: '18:00' });
   const corpo = { clinica_nome: 'Clínica Vet Teste', clinica_endereco: 'Rua das Flores, 10', clinica_telefone: '(71) 3333-4444', clinica_cidade: 'Salvador' };
   assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.felipe, corpo })).status, 403);
   assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.recepcao, corpo })).status, 403);
   assert.equal((await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet, corpo: { clinica_nome: '  ' } })).status, 400);
   const ok = await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet, corpo });
   assert.equal(ok.status, 200);
-  assert.deepEqual((await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.felipe })).dados, corpo);
+  assert.deepEqual((await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.felipe })).dados, { ...corpo, consulta_hora_corte: '18:00' });
   // parcial: só muda o que veio
   await chamar(a.env, 'PATCH', '/api/configuracoes/clinica', { cookie: a.vet, corpo: { clinica_cidade: 'Lauro de Freitas' } });
   const l = (await chamar(a.env, 'GET', '/api/configuracoes/clinica', { cookie: a.vet })).dados;

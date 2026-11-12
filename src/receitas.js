@@ -137,13 +137,15 @@ function exigirVisivel(usuario, r) {
 }
 
 async function configuracaoClinica(env) {
-  const { results } = await env.DB.prepare(`SELECT chave, valor FROM configuracoes WHERE chave LIKE 'clinica_%'`).all();
+  const { results } = await env.DB.prepare(`SELECT chave, valor FROM configuracoes WHERE chave LIKE 'clinica_%' OR chave = 'consulta_hora_corte'`).all();
   const m = Object.fromEntries(results.map((x) => [x.chave, x.valor]));
   return {
     clinica_nome: m.clinica_nome || 'Vetclin',
     clinica_endereco: m.clinica_endereco || '',
     clinica_telefone: m.clinica_telefone || '',
     clinica_cidade: m.clinica_cidade || '',
+    // Horário a partir do qual a consulta passa a ter o valor "após o corte" (só administradores mudam).
+    consulta_hora_corte: m.consulta_hora_corte || '18:00',
   };
 }
 
@@ -607,8 +609,13 @@ async function clinicaAlterar(request, env) {
     if (c[k] === undefined) continue;
     novo[k] = texto(c[k], k.replace('clinica_', ''), { obrigatorio: k === 'clinica_nome', max: 200 });
   }
+  if (c.consulta_hora_corte !== undefined) {
+    const h = String(c.consulta_hora_corte).trim();
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) throw new ErroHttp(400, 'Horário inválido. Use o formato 18:00.');
+    novo.consulta_hora_corte = h;
+  }
   const agora = agoraISO();
-  const comandos = CHAVES_CLINICA.filter((k) => novo[k] !== antes[k]).map((k) => env.DB.prepare(
+  const comandos = [...CHAVES_CLINICA, 'consulta_hora_corte'].filter((k) => novo[k] !== antes[k]).map((k) => env.DB.prepare(
     `INSERT INTO configuracoes (chave, valor, atualizado_em, atualizado_por) VALUES (?, ?, ?, ?)
      ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor, atualizado_em = excluded.atualizado_em, atualizado_por = excluded.atualizado_por`
   ).bind(k, novo[k], agora, adm.id));
