@@ -48,7 +48,21 @@ export async function exigirFoto(env, id) {
   if (!f) throw new ErroHttp(400, 'Foto não encontrada. Envie a foto de novo.');
 }
 
-// Lê os dados da chegada: { peso_kg, pesar_depois, motivo, urgente, foto_id }.
+// "Para quem?": id de um veterinário, ou vazio (= qualquer veterinário). Só confere o formato aqui.
+export function lerParaVeterinario(valor) {
+  if (valor === undefined || valor === null || valor === '') return null;
+  if (typeof valor !== 'number' || !Number.isInteger(valor) || valor < 1) throw new ErroHttp(400, 'Veterinário inválido.');
+  return valor;
+}
+
+// Confere se o veterinário escolhido existe, está ativo e é mesmo veterinário (ainda sem gravar nada).
+export async function exigirVeterinarioAtivo(env, id) {
+  if (id === null || id === undefined) return;
+  const v = await env.DB.prepare(`SELECT id FROM usuarios WHERE id = ? AND papel = 'veterinario' AND ativo = 1`).bind(id).first();
+  if (!v) throw new ErroHttp(400, 'Escolha um veterinário ativo para "Para quem?".');
+}
+
+// Lê os dados da chegada: { peso_kg, pesar_depois, motivo, urgente, foto_id, para_veterinario_id }.
 export function lerChegada(c, usuario) {
   if (c === null || typeof c !== 'object' || Array.isArray(c)) throw new ErroHttp(400, 'Dados da chegada inválidos.');
   const peso = lerPeso(c.peso_kg);
@@ -59,6 +73,7 @@ export function lerChegada(c, usuario) {
     motivo: texto(c.motivo, 'motivo', { max: 200 }),
     urgente: booleano(c.urgente),
     fotoId: fotoIdOpcional(c.foto_id),
+    paraVetId: lerParaVeterinario(c.para_veterinario_id),
   };
 }
 
@@ -69,9 +84,9 @@ export function lerChegada(c, usuario) {
 export function comandoInserirAtendimento(env, { petId, petCodigo, a, usuarioId, agora }) {
   return env.DB.prepare(
     `INSERT INTO atendimentos (pet_id, chegada_em, peso_kg, peso_origem, peso_registrado_por, motivo, urgente, foto_id,
-                               status, registrado_por, criado_em, atualizado_em)
-     VALUES (${petId ? '?' : '(SELECT id FROM pets WHERE codigo = ?)'}, ?, ?, ?, ?, ?, ?, ?, 'chegou', ?, ?, ?)`
-  ).bind(petId ?? petCodigo, agora, a.peso, a.pesoOrigem, a.peso === null ? null : usuarioId, a.motivo, a.urgente ? 1 : 0, a.fotoId,
+                               para_veterinario_id, status, registrado_por, criado_em, atualizado_em)
+     VALUES (${petId ? '?' : '(SELECT id FROM pets WHERE codigo = ?)'}, ?, ?, ?, ?, ?, ?, ?, ?, 'chegou', ?, ?, ?)`
+  ).bind(petId ?? petCodigo, agora, a.peso, a.pesoOrigem, a.peso === null ? null : usuarioId, a.motivo, a.urgente ? 1 : 0, a.fotoId, a.paraVetId ?? null,
     usuarioId, agora, agora);
 }
 
@@ -94,7 +109,7 @@ function comandoLimparFoto(env, fotoId) {
 export async function registrarChegada(env, { usuarioId, atendimentoId, petId, a, ip, via = null }) {
   await registrarAcao(env, {
     usuarioId, acao: 'criar_atendimento', entidade: 'atendimentos', entidadeId: atendimentoId,
-    depois: { pet_id: petId, peso_kg: a.peso, peso_origem: a.pesoOrigem, motivo: a.motivo, urgente: a.urgente, foto_id: a.fotoId, ...(via ? { via } : {}) },
+    depois: { pet_id: petId, peso_kg: a.peso, peso_origem: a.pesoOrigem, motivo: a.motivo, urgente: a.urgente, foto_id: a.fotoId, para_veterinario_id: a.paraVetId ?? null, ...(via ? { via } : {}) },
     ip,
   });
   await avisarChegada(env, atendimentoId, usuarioId);
@@ -109,7 +124,7 @@ export function textoAvisoChegada(item) {
   const especie = NOME_ESPECIE[pet.especie] || pet.especie || '';
   const peso = item.sem_peso ? 'Sem peso' : `${String(item.peso_kg).replace('.', ',')} kg`;
   return {
-    titulo: `${item.urgente ? 'URGENTE: ' : 'Chegou: '}${pet.nome}${especie ? ` (${especie})` : ''}`,
+    titulo: `${item.para_veterinario ? 'Para você — ' : ''}${item.urgente ? 'URGENTE: ' : 'Chegou: '}${pet.nome}${especie ? ` (${especie})` : ''}`,
     corpo: [peso, item.motivo, item.tutor?.nome ? `tutor ${item.tutor.nome}` : ''].filter(Boolean).join(' · '),
   };
 }
@@ -118,7 +133,8 @@ async function avisarChegada(env, atendimentoId, usuarioId) {
     const item = await buscarItemAtendimento(env, atendimentoId);
     const { titulo, corpo } = textoAvisoChegada(item);
     await (env.NOTIFICAR_TESTE ?? notificar)(env, {
-      para: { papel: 'veterinario', excetoUsuarioId: usuarioId },
+      // Com "Para quem?" preenchido, só aquele veterinário é avisado; senão, todos (menos quem registrou).
+      para: item.para_veterinario ? { usuarioId: item.para_veterinario.id } : { papel: 'veterinario', excetoUsuarioId: usuarioId },
       titulo, corpo, url: '#/hoje', tag: `chegada-${atendimentoId}`, urgente: item.urgente,
     });
   } catch (e) {
@@ -130,13 +146,14 @@ async function avisarChegada(env, atendimentoId, usuarioId) {
 const SELECT_ATENDIMENTO = `
   SELECT a.*, p.codigo AS pet_codigo, p.nome AS pet_nome, p.especie, p.idade_anos, p.idade_meses, p.foto_id AS pet_foto_id,
          t.id AS tutor_id, t.nome AS tutor_nome, t.whatsapp AS tutor_whatsapp,
-         v.nome AS vet_nome,
+         v.nome AS vet_nome, pv.nome AS para_vet_nome,
          (SELECT COALESCE(SUM(i.quantidade * i.valor_unitario_centavos), 0) ${PRODUTOS_DO_ATENDIMENTO} AND i.valor_unitario_centavos IS NOT NULL) AS produtos_centavos,
          (SELECT COUNT(*) ${PRODUTOS_DO_ATENDIMENTO} AND i.valor_unitario_centavos IS NULL) AS produtos_sem_valor
     FROM atendimentos a
     JOIN pets p ON p.id = a.pet_id
     JOIN tutores t ON t.id = p.tutor_id
-    LEFT JOIN usuarios v ON v.id = a.veterinario_id`;
+    LEFT JOIN usuarios v ON v.id = a.veterinario_id
+    LEFT JOIN usuarios pv ON pv.id = a.para_veterinario_id`;
 
 // Minutos de espera: da chegada até o início do atendimento (ou até agora).
 function esperaMinutos(a, agoraMs) {
@@ -152,6 +169,7 @@ function itemAtendimento(a, agoraMs) {
     motivo: a.motivo ?? '', urgente: a.urgente === 1, foto_id: a.foto_id ?? null,
     produtos_centavos: a.produtos_centavos ?? 0, produtos_sem_valor: a.produtos_sem_valor ?? 0,
     cancelado_em: a.cancelado_em ?? null, motivo_cancelamento: a.motivo_cancelamento ?? null,
+    para_veterinario: a.para_veterinario_id ? { id: a.para_veterinario_id, nome: a.para_vet_nome } : null,
     veterinario: a.veterinario_id ? { id: a.veterinario_id, nome: a.vet_nome } : null,
     pet: { id: a.pet_id, codigo: a.pet_codigo, nome: a.pet_nome, especie: a.especie, idade_anos: a.idade_anos ?? null, idade_meses: a.idade_meses ?? null, foto_id: a.pet_foto_id ?? null },
     tutor: { id: a.tutor_id, nome: a.tutor_nome, final_telefone: finalTelefone(a.tutor_whatsapp) },
@@ -170,7 +188,7 @@ async function atendimentoBruto(env, id) {
   return a;
 }
 
-const resumoAtendimento = (a) => ({ peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, motivo: a.motivo ?? null, urgente: a.urgente === 1, foto_id: a.foto_id ?? null });
+const resumoAtendimento = (a) => ({ peso_kg: a.peso_kg ?? null, peso_origem: a.peso_origem ?? null, motivo: a.motivo ?? null, urgente: a.urgente === 1, foto_id: a.foto_id ?? null, para_veterinario_id: a.para_veterinario_id ?? null });
 
 // ---------- rotas ----------
 async function atendimentosCriar(request, env) {
@@ -183,6 +201,7 @@ async function atendimentosCriar(request, env) {
   if (!pet) throw new ErroHttp(404, 'Pet não encontrado.');
   if (pet.ativo !== 1) throw new ErroHttp(409, 'Este pet está arquivado.');
   if (a.fotoId) await exigirFoto(env, a.fotoId);
+  await exigirVeterinarioAtivo(env, a.paraVetId);
 
   const jaNaClinica = async () => {
     const aberto = await env.DB.prepare(`SELECT id FROM atendimentos WHERE pet_id = ? AND status IN ('chegou','em_atendimento')`).bind(petId).first();
@@ -223,6 +242,13 @@ async function atendimentosAlterar(request, env, id) {
   if (!ABERTOS.includes(antes.status)) throw new ErroHttp(409, 'Este atendimento já foi encerrado e não pode mais ser alterado.');
 
   const novo = { ...antes };
+  if (c.para_veterinario_id !== undefined) {
+    novo.para_veterinario_id = lerParaVeterinario(c.para_veterinario_id);
+    if (novo.para_veterinario_id !== antes.para_veterinario_id) {
+      if (antes.status !== 'chegou') throw new ErroHttp(409, 'Só dá para mudar "Para quem?" enquanto o paciente está aguardando.');
+      await exigirVeterinarioAtivo(env, novo.para_veterinario_id);
+    }
+  }
   if (c.peso_kg !== undefined) {
     const peso = lerPeso(c.peso_kg);
     if (peso === null) throw new ErroHttp(400, 'Informe o peso em kg.');
@@ -242,9 +268,9 @@ async function atendimentosAlterar(request, env, id) {
   const agora = agoraISO();
   const fotoMudou = novo.foto_id !== antes.foto_id;
   const comandos = [
-    env.DB.prepare(`UPDATE atendimentos SET peso_kg = ?, peso_origem = ?, peso_registrado_por = ?, motivo = ?, urgente = ?, foto_id = ?, atualizado_em = ?
+    env.DB.prepare(`UPDATE atendimentos SET peso_kg = ?, peso_origem = ?, peso_registrado_por = ?, motivo = ?, urgente = ?, foto_id = ?, para_veterinario_id = ?, atualizado_em = ?
                      WHERE id = ? AND status IN ('chegou','em_atendimento')`)
-      .bind(novo.peso_kg, novo.peso_origem, novo.peso_registrado_por, novo.motivo, novo.urgente, novo.foto_id, agora, id),
+      .bind(novo.peso_kg, novo.peso_origem, novo.peso_registrado_por, novo.motivo, novo.urgente, novo.foto_id, novo.para_veterinario_id ?? null, agora, id),
   ];
   if (fotoMudou && novo.foto_id) comandos.push(comandoFotoDoPet(env, { petId: antes.pet_id, fotoId: novo.foto_id, agora }));
   if (fotoMudou && antes.foto_id) comandos.push(comandoLimparFoto(env, antes.foto_id));
@@ -291,7 +317,7 @@ const atendimentosCancelar = (request, env, id) => mudarStatus(request, env, id,
 
 // Tela "Hoje": chegadas do dia (dia = 00:00 às 24:00 em Bahia).
 async function hoje(request, env) {
-  await exigirLogin(request, env);
+  const u = await exigirLogin(request, env);
   const agora = new Date();
   const inicio = inicioDoDiaBahia(agora);
   const agoraMs = agora.getTime();
@@ -300,9 +326,9 @@ async function hoje(request, env) {
   // num dia anterior — assim um atendimento esquecido não fica escondido
   // nem impede o pet de dar entrada de novo. Esses vêm marcados com
   // "de_outro_dia: true" para a tela mostrar a data.
-  const lista = async (onde, ordem, limite = 200, soHoje = false) => {
+  const lista = async (onde, ordem, limite = 200, soHoje = false, argsOrdem = []) => {
     const filtroData = soHoje ? 'a.chegada_em >= ? AND ' : '';
-    const args = soHoje ? [inicio, limite] : [limite];
+    const args = soHoje ? [inicio, ...argsOrdem, limite] : [...argsOrdem, limite];
     const { results } = await env.DB.prepare(`${SELECT_ATENDIMENTO} WHERE ${filtroData}${onde} ORDER BY ${ordem} LIMIT ?`).bind(...args).all();
     const pedidos = await resumosDePedidos(env, results.map((a) => a.id));
     return results.map((a) => ({ ...itemAtendimento(a, agoraMs), de_outro_dia: a.chegada_em < inicio, pedido: pedidos.get(a.id) ?? null }));
@@ -311,7 +337,9 @@ async function hoje(request, env) {
   return json({
     agora: agora.toISOString(),
     inicio_dia: inicio,
-    aguardando: await lista(`a.status = 'chegou'`, 'a.urgente DESC, a.chegada_em ASC, a.id ASC'),
+    aguardando: await lista(`a.status = 'chegou'`,
+      // Urgentes primeiro; depois, para um veterinário, os que são "para ele"; depois por ordem de chegada.
+      'a.urgente DESC, CASE WHEN a.para_veterinario_id = ? THEN 0 ELSE 1 END, a.chegada_em ASC, a.id ASC', 200, false, [u.papel === 'veterinario' ? u.id : 0]),
     em_atendimento: await lista(`a.status = 'em_atendimento'`, 'a.iniciado_em ASC, a.id ASC'),
     finalizados: await lista(`a.status = 'finalizado'`, 'a.finalizado_em DESC, a.id DESC', 20, true),
     aguardando_pagamento: await listaAguardandoPagamento(env),

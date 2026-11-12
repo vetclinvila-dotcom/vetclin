@@ -71,7 +71,7 @@ function primeiraLinha(t) {
 }
 
 // Confere a lista de remédios (colunas) enviada pela tela. null = receita em texto livre.
-// Devolve a lista limpa: os 5 campos (até 200 letras cada) e, se vierem, "via" (até 40) e "comprar" (até 30).
+// Devolve a lista limpa: os 5 campos (até 200 letras cada) e, se vierem, "via" (até 40), "comprar" (até 30) e "aplicado" (verdadeiro/falso).
 // Receitas antigas não têm "via"/"comprar": esses campos só entram quando a tela os envia.
 export function lerLinhas(valor) {
   if (valor === null) return null;
@@ -94,6 +94,12 @@ export function lerLinhas(valor) {
       const t = v.replace(/[​-‍⁠﻿]/g, '').replace(/\s+/g, ' ').trim();
       if (t.length > max) throw new ErroHttp(400, `O campo ${campo} do remédio ${n + 1} está grande demais (máximo ${max} letras).`);
       linha[campo] = t;
+    }
+    // "aplicado": remédio aplicado na própria clínica (cobra, mas o tutor não compra). Só entra se a tela enviar.
+    if (x.aplicado !== undefined && x.aplicado !== null) {
+      if (typeof x.aplicado !== 'boolean') throw new ErroHttp(400, `O campo aplicado do remédio ${n + 1} deve ser verdadeiro ou falso.`);
+      linha.aplicado = x.aplicado;
+      if (x.aplicado) linha.comprar = ''; // aplicado aqui: não tem quantidade a comprar
     }
     return linha;
   });

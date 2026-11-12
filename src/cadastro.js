@@ -1,7 +1,7 @@
 // Cadastro de tutores e pets: busca, criação, edição, junção e limpeza de testes.
 import { exigirAdmin, exigirLogin } from './auth.js';
 import { ErroHttp, agoraISO, finalTelefone, ipDe, json, lerJson, prepararAcao, proximoCodigo, registrarAcao, texto } from './util.js';
-import { buscarItemAtendimento, comandoFotoDoPet, comandoInserirAtendimento, exigirFoto, lerChegada, registrarChegada } from './atendimentos.js';
+import { buscarItemAtendimento, comandoFotoDoPet, comandoInserirAtendimento, exigirFoto, exigirVeterinarioAtivo, lerChegada, registrarChegada } from './atendimentos.js';
 
 const ESPECIES = ['cao', 'gato', 'outro'];
 const SEXOS = ['macho', 'femea'];
@@ -464,6 +464,7 @@ async function cadastroRapido(request, env) {
   // Chegada (opcional): validada ANTES de gravar qualquer coisa.
   const chegada = c.chegada !== undefined && c.chegada !== null ? lerChegada(c.chegada, u) : null;
   if (chegada?.fotoId) await exigirFoto(env, chegada.fotoId);
+  if (chegada) await exigirVeterinarioAtivo(env, chegada.paraVetId);
   const origem = origemDe(u);
   const ip = ipDe(request);
   const agora = agoraISO();

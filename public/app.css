@@ -177,6 +177,12 @@ button.resultado:hover:not(:disabled) { background: var(--turquesa-fundo); }
 /* Escolha Cão / Gato / Outro */
 .grupo-opcoes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .grupo-opcoes.dois { grid-template-columns: 1fr 1fr; }
+/* "Para quem?": botões grandes que quebram em linhas conforme o tamanho da tela */
+.grupo-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+button.chip-para { flex: 1 1 calc(50% - 10px); min-height: 52px; padding: 8px 12px; color: var(--petroleo); background: #fff; border: 1.5px solid var(--borda-campo); box-shadow: none; border-radius: var(--raio-campo); font-weight: 800; }
+button.chip-para:hover:not(:disabled):not([aria-checked="true"]) { background: var(--turquesa-fundo); }
+button.chip-para[aria-checked="true"] { color: #fff; background: var(--petroleo); border-color: var(--petroleo); }
+button.chip-para[data-vet="qualquer"] { flex-basis: 100%; }
 button.opcao { color: var(--petroleo); background: #fff; border: 1.5px solid var(--borda-campo); box-shadow: none; min-height: 52px; padding: 8px; border-radius: var(--raio-campo); font-weight: 800; }
 button.opcao:hover:not(:disabled) { background: var(--turquesa-fundo); }
 button.opcao[aria-checked="true"] { color: #fff; background: var(--petroleo); border-color: var(--petroleo); }
@@ -304,6 +310,8 @@ button.buscar { min-height: 48px; border-radius: var(--raio-campo); font-size: 1
 .pilula.espera { color: var(--laranja-texto); background: var(--laranja-fundo); }
 .pilula.com-vet { color: var(--acao-escura); background: var(--turquesa-fundo); }
 .pilula.pronto { color: var(--texto-rotulo); background: var(--cinza-fundo); }
+.pilula.para-vet { color: var(--petroleo); background: #fff; border: 1.5px solid var(--petroleo); padding: 1.5px 9px; }
+.pilula.para-voce { color: #fff; background: var(--acao); font-weight: 800; }
 .peso-faltando { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .selo-sem-peso { display: inline-block; padding: 2px 10px; border-radius: 8px; background: var(--urgente); color: #fff; font-weight: 800; font-size: 0.9375rem; white-space: nowrap; }
 .selo-sem-peso.pequeno { font-size: 0.8125rem; padding: 1px 8px; }
@@ -461,6 +469,16 @@ button.adicionar:hover:not(:disabled) { background: var(--turquesa-fundo); }
   .rem-pe .produto-detalhes { flex: 1 1 auto; justify-content: flex-start; }
 }
 
+/* "Aplicado aqui" (remédio aplicado na clínica) */
+.rem-campo.rem-aplicado { grid-column: 1 / -1; }
+button.chip-aplicado { align-self: flex-start; min-height: 44px; padding: 0 16px; font-size: 0.9375rem; font-weight: 800; color: var(--petroleo); background: #fff; border: 1.5px solid var(--borda-campo); box-shadow: none; border-radius: 999px; }
+button.chip-aplicado:hover:not(:disabled):not([aria-checked="true"]) { background: var(--turquesa-fundo); }
+button.chip-aplicado[aria-checked="true"] { color: #fff; background: var(--acao); border-color: var(--acao); }
+.remedio-linha.aplicado { border-color: var(--turquesa-borda); background: var(--turquesa-fundo); }
+.nota-aplicado { margin: 0; font-size: 0.875rem; color: var(--acao-escura); font-weight: 700; }
+.nota-aplicado[hidden], .rem-comprar[hidden], .rem-temos[hidden] { display: none; }
+@media (min-width: 900px) { .rem-campo.rem-aplicado { grid-column: auto; } }
+
 /* ---------- Folha do receituário (aparece na tela e no papel) ---------- */
 .folha { position: relative; background: #fff; color: #1b1b1b; border: 1px solid var(--divisor); border-radius: 6px; padding: 24px 20px 0; margin: 12px 0 24px; font-size: 0.9375rem; line-height: 1.5; display: flex; flex-direction: column; overflow: hidden; }
 .folha-via { position: absolute; top: 8px; right: 12px; font-size: 0.75rem; font-weight: 700; border: 1px solid #1b1b1b; padding: 0 8px; border-radius: 4px; }
@@ -481,6 +499,10 @@ button.adicionar:hover:not(:disabled) { background: var(--turquesa-fundo); }
 .folha-item-linha .titulo, .folha-item-linha .comprar { font-weight: 800; }
 .folha-item-linha .comprar { white-space: nowrap; }
 .folha-item p { margin: 0; line-height: 1.5; }
+.folha-aplicado { background: #f4fafa; border: 1px solid #c9dadd; border-radius: 10px; padding: 12px 16px; gap: 8px; }
+.folha-aplicado h2 { font-size: 0.875rem; }
+.folha-aplicado .folha-item-linha { display: block; }
+.folha-aplicado .sufixo-aplicado { font-weight: 400; }
 .folha-texto { margin-top: 24px; }
 .folha-orientacoes-caixa { margin-top: 20px; background: #f4fafa; border-radius: 10px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; break-inside: avoid; }
 .folha-orientacoes-caixa h2 { margin: 0; font-size: 0.875rem; font-weight: 800; color: var(--petroleo); letter-spacing: 0.06em; }

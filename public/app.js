@@ -467,10 +467,32 @@ function escolhaUrgencia(inicial = false) {
   return { caixa: el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': 'Urgência' }, normal, forte), valor: () => urgente };
 }
 
+// "Para quem?": botões grandes "Qualquer veterinário" (padrão) + um por veterinário ativo.
+// valor() devolve o id do veterinário escolhido, ou null (= qualquer veterinário).
+function escolhaParaQuem(veterinarios, inicialId = null) {
+  let escolhido = veterinarios.some((v) => v.id === inicialId) ? inicialId : null;
+  const botoes = [{ id: null, nome: 'Qualquer veterinário' }, ...veterinarios].map((v) => {
+    const b = el('button', { type: 'button', class: 'chip-para', role: 'radio', 'data-vet': v.id === null ? 'qualquer' : String(v.id) }, v.nome);
+    b.addEventListener('click', () => { escolhido = v.id; marcar(); });
+    return { v, b };
+  });
+  const marcar = () => botoes.forEach(({ v, b }) => b.setAttribute('aria-checked', String(v.id === escolhido)));
+  marcar();
+  return {
+    caixa: el('div', { class: 'grupo-chips', id: 'para-quem', role: 'radiogroup', 'aria-label': 'Para quem?' }, botoes.map(({ b }) => b)),
+    valor: () => escolhido,
+  };
+}
+
+// Lista de veterinários ativos para o "Para quem?" (se falhar, o campo fica só com "Qualquer veterinário").
+async function veterinariosAtivos() {
+  try { return (await api('GET', '/api/usuarios/veterinarios')).veterinarios; } catch { return []; }
+}
+
 // Campos de uma chegada. O PESO vem primeiro e é o maior campo da tela.
 // Devolve partes separadas, porque o cadastro rápido põe o peso no meio do formulário:
 //   peso (nós da tela), resto (motivo, urgência, foto) e coletar() -> dados prontos para a API.
-function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgente = false, fotoInicial = null, permitirPesarDepois = true } = {}) {
+function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgente = false, fotoInicial = null, permitirPesarDepois = true, veterinarios = [], paraInicial = null, mostrarParaQuem = true } = {}) {
   let pesarDepois = false;
   const peso = el('input', {
     id: 'peso_kg', name: 'peso_kg', class: 'peso-entrada', type: 'text', inputmode: 'decimal', placeholder: 'ex.: 12,4',
@@ -489,6 +511,7 @@ function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgen
   });
   const motivoCampo = el('textarea', { id: 'motivo', name: 'motivo', rows: 2, maxlength: 200, placeholder: 'ex.: vômito desde ontem' }, motivo);
   const urgencia = escolhaUrgencia(urgente);
+  const paraQuem = escolhaParaQuem(veterinarios, paraInicial);
   const foto = campoFoto(fotoInicial, nomePet);
   return {
     peso: [
@@ -500,9 +523,11 @@ function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgen
     resto: [
       el('label', { for: 'motivo' }, 'Motivo da vinda'), motivoCampo,
       el('label', {}, 'Urgência'), urgencia.caixa,
+      mostrarParaQuem ? el('label', {}, 'Para quem?') : null, mostrarParaQuem ? paraQuem.caixa : null,
       foto.caixa,
     ],
     foto,
+    paraQuem,
     pesoCampo: peso,
     // Confere tudo e envia a foto (se houver). Lança erro com mensagem em português.
     async coletar() {
@@ -510,7 +535,7 @@ function camposChegada({ nomePet = 'pet', pesoInicial = null, motivo = '', urgen
       if (kg === null && !pesarDepois) throw new Error('Informe o peso ou escolha "Pesar depois".');
       const m = motivoCampo.value.trim();
       if (!m) throw new Error('Preencha o motivo da vinda.');
-      return { peso_kg: kg, pesar_depois: pesarDepois, motivo: m, urgente: urgencia.valor(), foto_id: await foto.resolver() };
+      return { peso_kg: kg, pesar_depois: pesarDepois, motivo: m, urgente: urgencia.valor(), foto_id: await foto.resolver(), para_veterinario_id: paraQuem.valor() };
     },
   };
 }
@@ -580,6 +605,7 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
       a.sem_peso ? pesoNo : null,
       el('span', { class: 'atend-sub' }, `${[ROTULO_ESPECIE[p.especie] || p.especie, idade].filter(Boolean).join(', ')} · Tutor: ${a.tutor.nome}${a.tutor.final_telefone ? ' · final ' + a.tutor.final_telefone : ''}`),
       a.motivo ? el('span', { class: 'atend-motivo' }, a.motivo) : null,
+      a.status === 'chegou' && a.para_veterinario ? paraPilula(a.para_veterinario) : null,
       pilula()));
   corpo.addEventListener('keydown', (ev) => { if (ev.target === corpo && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); abrirFicha(); } });
 
@@ -644,6 +670,13 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
           : null,
         botoes.length ? el('div', { class: 'atend-botoes' }, botoes) : null)
       : null);
+}
+
+// Pílula "Para você" (quando é o veterinário logado) ou "Para Dr(a). X" (contorno).
+function paraPilula(vet) {
+  return vet.id === usuario.id
+    ? el('span', { class: 'pilula para-voce' }, 'Para você')
+    : el('span', { class: 'pilula para-vet' }, `Para ${comTratamento(vet.nome)}`);
 }
 
 // "Quinta-feira, 12 de novembro" (no fuso da clínica).
@@ -883,7 +916,7 @@ async function telaChegadaNova(petPre = null) {
   }
 
   const especie = escolhaEspecie('');
-  const campos = camposChegada({ nomePet: 'pet' });
+  const campos = camposChegada({ nomePet: 'pet', veterinarios: await veterinariosAtivos() });
   const area = el('div');
   const sugestoes = el('div', { id: 'sugestoes' });
   const botao = el('button', { type: 'submit', id: 'enviar-chegada', class: 'grande' }, 'Registrar chegada');
@@ -1024,7 +1057,11 @@ async function telaEditarAtendimento(id) {
     mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, a.pet.nome), caixaMensagem('erro', 'Este atendimento já foi encerrado e não pode mais ser alterado.'));
     return;
   }
-  const campos = camposChegada({ nomePet: a.pet.nome, pesoInicial: a.peso_kg, motivo: a.motivo, urgente: a.urgente, fotoInicial: a.foto_id, permitirPesarDepois: false });
+  const campos = camposChegada({
+    nomePet: a.pet.nome, pesoInicial: a.peso_kg, motivo: a.motivo, urgente: a.urgente, fotoInicial: a.foto_id, permitirPesarDepois: false,
+    // "Para quem?" só pode mudar enquanto o paciente está aguardando.
+    mostrarParaQuem: a.status === 'chegou', veterinarios: a.status === 'chegou' ? await veterinariosAtivos() : [], paraInicial: a.para_veterinario?.id ?? null,
+  });
   const area = el('div');
   const botao = el('button', { type: 'submit' }, 'Salvar');
   const f = el('form', { novalidate: true },
@@ -1041,6 +1078,7 @@ async function telaEditarAtendimento(id) {
       const corpo = { motivo, urgente: f.querySelector('#urgencia-urgente').getAttribute('aria-checked') === 'true' };
       if (kg !== null) corpo.peso_kg = kg;
       else if (!a.sem_peso) throw new Error('Informe o peso em kg.');
+      if (a.status === 'chegou') corpo.para_veterinario_id = campos.paraQuem.valor();
       if (campos.foto.mudou()) corpo.foto_id = await campos.foto.resolver();
       await api('PATCH', `/api/atendimentos/${id}`, corpo);
       irPara('#/hoje');
@@ -1566,7 +1604,14 @@ function montarFolha(d) {
   const campo = (rotulo, valor, classe = '') => el('div', { class: classe }, el('strong', {}, rotulo + ': '), valor || '—');
   const endereco = [c.clinica_endereco, c.clinica_cidade].filter(Boolean).join(' · ');
   const corpo = grupos.length
-    ? el('section', { class: 'folha-corpo-grupos', 'aria-label': 'Medicamentos' }, grupos.map((g) => el('div', { class: 'folha-grupo' },
+    ? el('section', { class: 'folha-corpo-grupos', 'aria-label': 'Medicamentos' }, grupos.map((g) => g.aplicado
+      // Aplicado na clínica: caixa clara, só a lista (sem pontilhado e sem quantidade a comprar).
+      ? el('div', { class: 'folha-grupo folha-aplicado' },
+        el('h2', {}, 'Aplicado na clínica (não precisa comprar)'),
+        g.itens.map((i) => el('div', { class: 'folha-item' },
+          el('div', { class: 'folha-item-linha' }, el('span', { class: 'titulo' }, `${i.n} – ${i.titulo}`), el('span', { class: 'sufixo-aplicado' }, ' — aplicado na clínica')),
+          i.detalhe ? el('p', {}, i.detalhe) : null)))
+      : el('div', { class: 'folha-grupo' },
       el('h2', {}, g.via),
       g.itens.map((i) => el('div', { class: 'folha-item' },
         i.titulo || i.comprar ? el('div', { class: 'folha-item-linha' },
@@ -1843,12 +1888,12 @@ function editorColunas(d, minha, aoMudar) {
   let n = 0;
   let linhas = (d.receita.linhas ?? []).map((l) => {
     const it = linhaDaReceita(l) ? itensSalvos[n++] : null;
-    const base = { ...linhaVazia(), ...l, temos: !!(it && it.temos), qtd: it ? String(it.quantidade) : '1', valor: it && it.temos ? reaisParaCampo(it.valor_unitario_centavos) : '' };
+    const base = { ...linhaVazia(), ...l, aplicado: l.aplicado === true, temos: l.aplicado === true || !!(it && it.temos), qtd: it ? String(it.quantidade) : '1', valor: it && it.temos ? reaisParaCampo(it.valor_unitario_centavos) : '' };
     base.via = String(base.via ?? '').trim() || VIA_PADRAO; // receita antiga: sem via = Uso oral
     base.viaOutro = eViaPropria(base.via);
     return base;
   });
-  const novaLinha = () => ({ ...linhaVazia(), temos: false, qtd: '1', valor: '', viaOutro: false });
+  const novaLinha = () => ({ ...linhaVazia(), aplicado: false, temos: false, qtd: '1', valor: '', viaOutro: false });
   if (!linhas.length) linhas = [novaLinha()];
 
   const lista = el('div', { class: 'remedios-lista', id: 'remedios-lista' });
@@ -1866,7 +1911,8 @@ function editorColunas(d, minha, aoMudar) {
   const subtotalDe = (it) => (it.temos && valorDe(it) !== null ? quantidadeDe(it) * valorDe(it) : 0);
   const preenchidas = () => linhas.filter((it) => linhaDaReceita(it));
   const semValor = () => preenchidas().filter((it) => it.temos && valorDe(it) === null);
-  const descricao = (it) => linhaDaReceita(it, { marcas: false }).slice(0, 300);
+  // Aplicado aqui: a descrição leva o aviso, para a conta mostrar que foi aplicado na clínica.
+  const descricao = (it) => (linhaDaReceita(it, { marcas: false }).slice(0, it.aplicado ? 270 : 300) + (it.aplicado ? ' (aplicado na clínica)' : '')).trim();
 
   function atualizarRodape() {
     escreverTotal(total, linhas.reduce((t, it) => t + subtotalDe(it), 0));
@@ -1910,6 +1956,7 @@ function editorColunas(d, minha, aoMudar) {
       const nome = String(it.via ?? '').trim() || VIA_PADRAO;
       const chave = nome.toLocaleUpperCase('pt-BR');
       const n = (contagem.get(chave) ?? 0) + 1;
+      if (it.aplicado) { if (it.pilula) it.pilula.textContent = 'Aplicado aqui'; continue; } // aplicados não entram na contagem das vias
       if (linhaDaReceita(it) || String(it.comprar ?? '').trim()) contagem.set(chave, n);
       if (it.pilula) it.pilula.textContent = `${n} · ${nome}`;
     }
@@ -1952,6 +1999,9 @@ function editorColunas(d, minha, aoMudar) {
     // Enter no último campo da última linha abre uma linha nova (sem precisar tocar no botão).
     comprar.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && pos === linhas.length - 1) { ev.preventDefault(); adicionarLinha(); } });
 
+    // "Aplicado aqui": o remédio foi aplicado na clínica. Cobra (Temos = Sim, com valor), mas o tutor não compra.
+    const chipAplicado = el('button', { type: 'button', class: 'chip-aplicado', role: 'switch', 'data-campo': 'aplicado' }, 'Aplicado aqui');
+    const notaAplicado = el('p', { class: 'nota-aplicado' }, 'Foi aplicado na clínica: será cobrado e não vai na lista de compras do papel.');
     const nao = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'nao' }, 'Não');
     const sim = el('button', { type: 'button', class: 'opcao', role: 'radio', 'data-escolha': 'sim' }, 'Sim');
     const qtd = el('input', { type: 'text', inputmode: 'numeric', class: 'produto-qtd', 'aria-label': 'Qtd (cobrança)', value: it.qtd, maxlength: 3, autocomplete: 'off' });
@@ -1961,6 +2011,11 @@ function editorColunas(d, minha, aoMudar) {
       sim.setAttribute('aria-checked', String(it.temos));
       linha.classList.toggle('sim', it.temos);
       detalhes.hidden = !it.temos;
+      chipAplicado.setAttribute('aria-checked', String(!!it.aplicado));
+      linha.classList.toggle('aplicado', !!it.aplicado);
+      campoComprar.hidden = !!it.aplicado;
+      blocoTemos.hidden = !!it.aplicado;
+      notaAplicado.hidden = !it.aplicado;
       const q = lerQuantidade(it.qtd); const v = lerReais(it.valor);
       qtd.classList.toggle('invalido', q === null);
       valor.classList.toggle('invalido', it.valor.trim() !== '' && (v === null || v > MAX_VALOR_CENTAVOS));
@@ -1968,6 +2023,12 @@ function editorColunas(d, minha, aoMudar) {
       atualizarRodape();
     };
     const mudouProduto = () => { atualizar(); agendar(); };
+    chipAplicado.addEventListener('click', () => {
+      it.aplicado = !it.aplicado;
+      if (it.aplicado) { it.comprar = ''; comprar.value = ''; it.temos = true; } // foi aplicado: a clínica tinha
+      mudouProduto(); mudou();
+      if (it.aplicado && valorDe(it) === null) valor.focus();
+    });
     nao.addEventListener('click', () => { it.temos = false; mudouProduto(); });
     sim.addEventListener('click', () => { it.temos = true; mudouProduto(); if (valorDe(it) === null) valor.focus(); });
     qtd.addEventListener('input', () => { it.qtd = qtd.value; mudouProduto(); });
@@ -1981,6 +2042,10 @@ function editorColunas(d, minha, aoMudar) {
     it.campoRemedio = rem.entrada;
     it.pilula = el('span', { class: 'pilula-via' });
 
+    const campoComprar = el('label', { class: 'rem-campo rem-comprar' }, 'Comprar (vai no papel)', comprar);
+    const blocoTemos = el('div', { class: 'rem-temos' },
+      el('span', { class: 'rotulo-mini' }, 'Temos?'),
+      el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': `Temos o remédio ${pos + 1}?` }, nao, sim));
     const remover = el('button', { type: 'button', class: 'remover-remedio', 'aria-label': `Remover remédio ${pos + 1}`, onclick: () => {
       linhas.splice(pos, 1);
       if (!linhas.length) linhas.push(novaLinha());
@@ -1992,12 +2057,12 @@ function editorColunas(d, minha, aoMudar) {
       el('div', { class: 'rem-grade' },
         el('div', { class: 'rem-campo rem-remedio' }, el('label', {}, ROTULOS_COLUNAS.remedio, rem.entrada), rem.chips),
         campoRot('dose', entradas.dose), campoRot('como', entradas.como, 'rem-como'), campoRot('intervalo', entradas.intervalo), campoRot('duracao', entradas.duracao),
-        el('label', { class: 'rem-campo rem-via' }, 'Via', seletorVia, viaOutro)),
+        el('label', { class: 'rem-campo rem-via' }, 'Via', seletorVia, viaOutro),
+        el('div', { class: 'rem-campo rem-aplicado' }, chipAplicado)),
+      notaAplicado,
       el('div', { class: 'rem-pe' },
-        el('label', { class: 'rem-campo rem-comprar' }, 'Comprar (vai no papel)', comprar),
-        el('div', { class: 'rem-temos' },
-          el('span', { class: 'rotulo-mini' }, 'Temos?'),
-          el('div', { class: 'grupo-opcoes dois', role: 'radiogroup', 'aria-label': `Temos o remédio ${pos + 1}?` }, nao, sim)),
+        campoComprar,
+        blocoTemos,
         detalhes));
     atualizar();
     return linha;
@@ -2056,7 +2121,7 @@ function editorColunas(d, minha, aoMudar) {
   estado.textContent = itensSalvos.length ? 'Salvo' : '';
   return {
     caixa,
-    linhas: () => linhas.map((it) => Object.fromEntries(CAMPOS_ENVIO.map((c) => [c, String(it[c] ?? '')]))),
+    linhas: () => linhas.map((it) => ({ ...Object.fromEntries(CAMPOS_ENVIO.map((c) => [c, String(it[c] ?? '')])), aplicado: !!it.aplicado })),
     texto: () => textoDasLinhas(linhas),
     aoMudarTexto() {},
     salvarAgora,

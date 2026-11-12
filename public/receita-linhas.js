@@ -9,7 +9,7 @@ export const VIAS = ['Uso oral', 'Uso injetável', 'Uso tópico', 'Uso otológic
 export const VIA_PADRAO = VIAS[0];
 
 export function linhaVazia() {
-  return { remedio: '', dose: '', como: '', intervalo: '', duracao: '', via: VIA_PADRAO, comprar: '' };
+  return { remedio: '', dose: '', como: '', intervalo: '', duracao: '', via: VIA_PADRAO, comprar: '', aplicado: false };
 }
 
 // Limpa um campo: sem asteriscos (para não quebrar o negrito do WhatsApp), sem quebras de linha, sem espaços sobrando.
@@ -53,13 +53,35 @@ export function viaDaLinha(l) {
   return (campo(l?.via) || VIA_PADRAO).toLocaleUpperCase('pt-BR');
 }
 
+// Nome do grupo dos remédios aplicados na própria clínica (o tutor não compra).
+export const VIA_APLICADO = 'APLICADO NA CLÍNICA';
+
+// Detalhe de um remédio aplicado na clínica. Exemplo: "Aplicado por via subcutânea, 0,75 ml."
+// (usa a via e o "como dar"; a via padrão "Uso injetável" não precisa repetir. Sem nada, fica vazio.)
+function detalheAplicado(l) {
+  const como = campo(l?.como).replace(/[.;,\s]+$/, '');
+  const via = campo(l?.via);
+  const viaTexto = via && via.toLocaleLowerCase('pt-BR') !== 'uso injetável' ? via.replace(/^uso\s+/i, '').toLocaleLowerCase('pt-BR') : '';
+  if (viaTexto) return `Aplicado por via ${viaTexto}${como ? ', ' + como : ''}.`;
+  return como ? `Aplicado: ${como}.` : '';
+}
+
 // Agrupa os remédios por via (na ordem em que aparecem) e numera dentro de cada grupo.
 // Linhas totalmente vazias são puladas. Serve para o papel e para o texto da receita.
+// Remédios "aplicado" (aplicados na clínica) NÃO entram nos grupos normais: vão num grupo
+// à parte, sempre por último: { via: 'APLICADO NA CLÍNICA', aplicado: true, itens }.
 // -> [{ via: 'USO ORAL', itens: [{ n, titulo, comprar, instrucao }] }]
 export function gruposDasLinhas(linhas) {
   const grupos = [];
+  const aplicados = [];
   for (const l of linhas ?? []) {
     const titulo = [campo(l?.remedio), campo(l?.dose)].filter(Boolean).join(' ');
+    if (l?.aplicado === true) {
+      if (!titulo) continue;
+      const detalhe = detalheAplicado(l);
+      aplicados.push({ n: aplicados.length + 1, titulo, comprar: '', detalhe, instrucao: `${titulo} — aplicado na clínica${detalhe ? '. ' + detalhe : ''}` });
+      continue;
+    }
     const comprar = campo(l?.comprar);
     const instrucao = instrucaoDaLinha(l);
     if (!titulo && !comprar && !instrucao) continue;
@@ -68,6 +90,7 @@ export function gruposDasLinhas(linhas) {
     if (!g) { g = { via, itens: [] }; grupos.push(g); }
     g.itens.push({ n: g.itens.length + 1, titulo, comprar, instrucao });
   }
+  if (aplicados.length) grupos.push({ via: VIA_APLICADO, aplicado: true, itens: aplicados });
   return grupos;
 }
 
@@ -76,14 +99,17 @@ export function gruposDasLinhas(linhas) {
 // 1 - *Doxiciclina 100 mg* ... 1 CX
 // Administrar 1 comprimido e meio a cada 12 horas, durante 28 dias.
 // (uma linha em branco entre os grupos; linhas vazias são puladas)
+// Os aplicados na clínica vão no fim, em "APLICADO NA CLÍNICA (não precisa comprar)".
 export function textoDasLinhas(linhas) {
-  return gruposDasLinhas(linhas).map((g) => [
-    g.via,
-    ...g.itens.flatMap((i) => [
-      i.titulo || i.comprar ? `${i.n} - ${[i.titulo ? `*${i.titulo}*` : '', i.comprar].filter(Boolean).join(' ... ')}` : '',
-      i.instrucao,
-    ]).filter(Boolean),
-  ].join('\n')).join('\n\n');
+  return gruposDasLinhas(linhas).map((g) => g.aplicado
+    ? [`${g.via} (não precisa comprar)`, ...g.itens.flatMap((i) => [`${i.n} - *${i.titulo}* — aplicado na clínica`, i.detalhe])].filter(Boolean).join('\n')
+    : [
+      g.via,
+      ...g.itens.flatMap((i) => [
+        i.titulo || i.comprar ? `${i.n} - ${[i.titulo ? `*${i.titulo}*` : '', i.comprar].filter(Boolean).join(' ... ')}` : '',
+        i.instrucao,
+      ]).filter(Boolean),
+    ].join('\n')).join('\n\n');
 }
 
 // Dá para a sugestão "Amoxicilina 250 mg" virar remédio "Amoxicilina" + dose "250 mg".
