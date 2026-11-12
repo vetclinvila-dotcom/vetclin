@@ -11,6 +11,8 @@ import { ROTAS_ATENDIMENTOS } from './atendimentos.js';
 import { ROTAS_FOTOS } from './fotos.js';
 import { ROTAS_RECEITAS } from './receitas.js';
 import { ROTAS_PUSH } from './notificacoes.js';
+import { ROTAS_PEDIDOS } from './pedidos.js';
+import { ROTAS_CATALOGO } from './catalogo.js';
 
 const JANELA_MS = 15 * 60 * 1000; // 15 minutos
 const LIMITE_POR_LOGIN = 5;
@@ -226,6 +228,8 @@ const ROTAS = [
   ...ROTAS_FOTOS,
   ...ROTAS_RECEITAS,
   ...ROTAS_PUSH,
+  ...ROTAS_PEDIDOS,
+  ...ROTAS_CATALOGO,
 ].map(([metodo, caminho, funcao]) => ({
   metodo, funcao,
   padrao: new RegExp('^' + caminho.replace(/:[a-z]+/g, '([^/]+)') + '/?$'),

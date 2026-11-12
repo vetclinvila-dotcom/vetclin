@@ -555,9 +555,15 @@ const FOTOS_TESTE = `
   WHERE foto_id NOT IN (SELECT foto_id FROM atendimentos WHERE foto_id IS NOT NULL AND id NOT IN (${ATEND_TESTE}))
     AND foto_id NOT IN (SELECT foto_id FROM pets WHERE foto_id IS NOT NULL AND id NOT IN (${PETS_TESTE}))`;
 
+// Inclui também as fotos de comprovante dos pagamentos de teste (que só esses pagamentos usam).
 async function idsFotosTeste(env) {
   const { results } = await env.DB.prepare(FOTOS_TESTE).all();
-  return results.map((r) => r.id);
+  const { results: comprovantes } = await env.DB.prepare(
+    `SELECT DISTINCT comprovante_foto_id AS id FROM pagamentos
+      WHERE comprovante_foto_id IS NOT NULL AND pedido_id IN (${PEDIDOS_TESTE})
+        AND comprovante_foto_id NOT IN (SELECT comprovante_foto_id FROM pagamentos WHERE comprovante_foto_id IS NOT NULL AND pedido_id NOT IN (${PEDIDOS_TESTE}))`
+  ).all();
+  return [...new Set([...results, ...comprovantes].map((r) => r.id))];
 }
 
 async function contarDadosTeste(env) {

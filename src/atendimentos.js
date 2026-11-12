@@ -2,6 +2,7 @@
 // O atendimento é por ordem de chegada (sem hora marcada).
 import { exigirLogin, exigirPapel } from './auth.js';
 import { notificar } from './notificacoes.js';
+import { PRODUTOS_DO_ATENDIMENTO, listaAguardandoPagamento, resumosDePedidos } from './pedidos.js';
 import { ErroHttp, agoraISO, finalTelefone, inicioDoDiaBahia, ipDe, json, lerJson, prepararAcao, registrarAcao, texto } from './util.js';
 
 const PAPEIS_CLINICOS = ['veterinario', 'suporte']; // quem pode iniciar e finalizar
@@ -126,12 +127,6 @@ async function avisarChegada(env, atendimentoId, usuarioId) {
 }
 
 // ---------- leitura ----------
-// Produtos "que temos" nas receitas do atendimento. Receitas canceladas não contam; e quando existe
-// uma nova versão (que não foi cancelada), só a nova conta, para não somar duas vezes.
-const PRODUTOS_DO_ATENDIMENTO = `
-  FROM receita_itens i JOIN receitas r ON r.id = i.receita_id
- WHERE r.atendimento_id = a.id AND r.status <> 'cancelada' AND i.temos = 1
-   AND NOT EXISTS (SELECT 1 FROM receitas n WHERE n.receita_anterior_id = r.id AND n.status <> 'cancelada')`;
 const SELECT_ATENDIMENTO = `
   SELECT a.*, p.codigo AS pet_codigo, p.nome AS pet_nome, p.especie, p.idade_anos, p.idade_meses, p.foto_id AS pet_foto_id,
          t.id AS tutor_id, t.nome AS tutor_nome, t.whatsapp AS tutor_whatsapp,
@@ -309,7 +304,8 @@ async function hoje(request, env) {
     const filtroData = soHoje ? 'a.chegada_em >= ? AND ' : '';
     const args = soHoje ? [inicio, limite] : [limite];
     const { results } = await env.DB.prepare(`${SELECT_ATENDIMENTO} WHERE ${filtroData}${onde} ORDER BY ${ordem} LIMIT ?`).bind(...args).all();
-    return results.map((a) => ({ ...itemAtendimento(a, agoraMs), de_outro_dia: a.chegada_em < inicio }));
+    const pedidos = await resumosDePedidos(env, results.map((a) => a.id));
+    return results.map((a) => ({ ...itemAtendimento(a, agoraMs), de_outro_dia: a.chegada_em < inicio, pedido: pedidos.get(a.id) ?? null }));
   };
   const cancelados = await env.DB.prepare(`SELECT COUNT(*) AS n FROM atendimentos WHERE chegada_em >= ? AND status = 'cancelado'`).bind(inicio).first();
   return json({
@@ -318,6 +314,7 @@ async function hoje(request, env) {
     aguardando: await lista(`a.status = 'chegou'`, 'a.urgente DESC, a.chegada_em ASC, a.id ASC'),
     em_atendimento: await lista(`a.status = 'em_atendimento'`, 'a.iniciado_em ASC, a.id ASC'),
     finalizados: await lista(`a.status = 'finalizado'`, 'a.finalizado_em DESC, a.id DESC', 20, true),
+    aguardando_pagamento: await listaAguardandoPagamento(env),
     cancelados_hoje: cancelados.n,
   });
 }

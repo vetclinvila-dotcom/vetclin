@@ -6,6 +6,7 @@ import { cartaoNotificacoes } from './notificacoes-app.js';
 import { itensDoTexto } from './produtos-receita.js';
 import { CAMPOS, VIAS, VIA_PADRAO, gruposDasLinhas, linhaDaReceita, linhaVazia, separarRemedioDose, textoDasLinhas } from './receita-linhas.js';
 import { MAX_VALOR_CENTAVOS, formatarReais, lerReais, reaisParaCampo } from './dinheiro.js';
+import { ROTULO_CATEGORIA, ROTULO_FORMA, atualizarDaReceita, estadoDaConta, receitaDesatualizada, totalDosItens, trocoDe } from './conta-regras.js';
 
 const raiz = document.getElementById('app');
 let usuario = null; // usuário logado
@@ -395,7 +396,7 @@ async function reduzirFoto(arquivo) {
 
 // Campo de foto: tirar foto (câmera) ou escolher da galeria, com miniatura e "Remover foto".
 // "inicial" = id de uma foto que já existe. Devolve { caixa, mudou(), resolver() }.
-function campoFoto(inicial = null, nomePet = 'pet') {
+function campoFoto(inicial = null, nomePet = 'pet', rotulo = 'Foto (opcional)') {
   let fotoId = inicial;        // foto já guardada no servidor
   let blob = null;             // foto nova, ainda não enviada
   let urlPrevia = null;
@@ -432,7 +433,7 @@ function campoFoto(inicial = null, nomePet = 'pet') {
   galeria.addEventListener('change', escolher);
   desenhar();
   const caixa = el('div', { class: 'campo-foto' },
-    el('label', {}, 'Foto (opcional)'),
+    el('label', {}, rotulo),
     el('div', { class: 'botoes-foto' },
       el('button', { type: 'button', class: 'foto-botao', id: 'foto-tirar', onclick: () => camera.click() }, icone('camera', 20), 'Tirar foto'),
       el('button', { type: 'button', class: 'foto-botao', id: 'foto-galeria-botao', onclick: () => galeria.click() }, 'Escolher da galeria')),
@@ -527,6 +528,27 @@ async function adicionarPeso(a, aoAtualizar) {
   if (ok) aoAtualizar();
 }
 
+// "Conta: R$ 145,00 · aberta" / "aguardando pagamento" (laranja) / "Pago ✓" (turquesa).
+function resumoDaConta(pedido) {
+  const e = estadoDaConta(pedido);
+  const resta = pedido.pago_centavos > 0 && e.tipo === 'aguardando';
+  return el('span', { class: 'atend-conta' }, 'Conta: ', el('strong', {}, formatarReais(pedido.total_centavos)), ' · ',
+    e.tipo === 'aberta' ? 'aberta' : el('span', { class: 'pilula-conta ' + e.tipo }, e.texto),
+    resta ? el('span', { class: 'conta-parcial' }, ` · pago ${formatarReais(pedido.pago_centavos)}`) : null);
+}
+
+// "agora mesmo", "há 5 min", "há 1 h 05 min".
+function tempoDesde(iso) {
+  const min = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000));
+  return min < 1 ? 'agora mesmo' : `há ${formatarEspera(min)}`;
+}
+
+// Quem enviou a conta: "Dr(a). Elizabeth" para veterinário; o nome puro para os demais.
+function nomeComTitulo(pessoa) {
+  if (!pessoa) return '';
+  return pessoa.papel === 'veterinario' ? comTratamento(pessoa.nome) : pessoa.nome;
+}
+
 // Cartão de um paciente na tela Hoje.
 function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
   const p = a.pet;
@@ -599,12 +621,20 @@ function cartaoAtendimento(a, { aoAtualizar, aoErro }) {
       if (feito) aoAtualizar();
     } }, 'Cancelar chegada'));
   }
-  const temProdutos = a.produtos_centavos > 0 || a.produtos_sem_valor > 0;
+  // Botão "Conta": abre a conta do atendimento (itens e pagamento). Fica em destaque quando falta receber.
+  if (a.pedido || a.status === 'em_atendimento' || a.status === 'finalizado') {
+    const falta = a.pedido && a.pedido.status === 'aguardando_pagamento';
+    botoes.unshift(el('button', { type: 'button', class: (falta ? '' : 'secundario ') + 'conta-botao', onclick: () => irPara(`#/conta/${a.id}`) }, 'Conta'));
+  }
+  // Com conta aberta, o total dela substitui o "Produtos: R$" (que já está dentro da conta).
+  const temProdutos = !a.pedido && (a.produtos_centavos > 0 || a.produtos_sem_valor > 0);
+  const conta = a.pedido ? resumoDaConta(a.pedido) : null;
   return el('article', { class: 'cartao-pet ' + a.status + (a.urgente ? ' urgente' : '') },
     a.urgente ? el('div', { class: 'faixa-urgente' }, icone('alerta', 14, 2.6), 'URGENTE') : null,
     corpo,
-    temProdutos || botoes.length
+    conta || temProdutos || botoes.length
       ? el('div', { class: 'atend-rodape' },
+        conta,
         temProdutos
           ? el('span', { class: 'atend-produtos' }, 'Produtos: ', el('strong', {}, formatarReais(a.produtos_centavos)),
             a.produtos_sem_valor > 0 ? el('span', { class: 'selo-produto-sem-valor' }, `${a.produtos_sem_valor} sem valor`) : null)
@@ -642,7 +672,9 @@ function telaHoje() {
     cartaoAviso,
     avisos, colunas,
     el('div', { class: 'acoes atalhos-rodape so-celular' },
+      el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/precos') }, 'Preços'),
       el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/notificacoes') }, 'Notificações'),
+      usuario.admin ? el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/caixa') }, 'Caixa de hoje') : null,
       usuario.admin ? el('button', { type: 'button', class: 'secundario', onclick: () => irPara('#/usuarios') }, 'Usuários') : null),
   );
 
@@ -678,6 +710,21 @@ function telaHoje() {
     return partes;
   }
 
+  // Contas enviadas para a recepção (de qualquer dia): finalizado e não pago precisa ficar à vista.
+  function secaoPagamento() {
+    const lista = dados.aguardando_pagamento || [];
+    if (!lista.length) return null;
+    return el('section', { class: 'secao-lateral secao-pagamento', 'aria-label': 'Aguardando pagamento' },
+      el('div', { class: 'secao-titulo' }, el('h2', { class: 'titulo-secao' }, 'Aguardando pagamento'), el('span', { class: 'selo-contagem' }, String(lista.length))),
+      lista.map((x) => el('div', { class: 'item-imprimir item-pagamento' },
+        el('div', { class: 'item-info' },
+          el('strong', {}, x.pet.nome, x.atendimento_status === 'finalizado' ? el('span', { class: 'etiqueta' }, 'Finalizado') : null),
+          el('span', { class: 'detalhe' }, `Tutor: ${x.tutor.nome}`),
+          el('span', { class: 'detalhe valor-pagamento' }, x.pago_centavos > 0 ? `Falta ${formatarReais(x.restante_centavos)} de ${formatarReais(x.total_centavos)}` : formatarReais(x.total_centavos)),
+          el('span', { class: 'detalhe' }, `${x.enviado_por ? 'enviado por ' + nomeComTitulo(x.enviado_por) + ' ' : ''}${tempoDesde(x.enviado_em)}`)),
+        el('button', { type: 'button', class: 'receber-botao', onclick: () => irPara(`#/conta/${x.atendimento_id}?receber=1`) }, 'Receber'))));
+  }
+
   function desenhar() {
     if (!dados) return;
     const total = dados.aguardando.length + dados.em_atendimento.length + dados.finalizados.length + dados.cancelados_hoje;
@@ -692,7 +739,7 @@ function telaHoje() {
       total === 0 ? el('div', { class: 'cartao vazio vazio-geral' }, el('p', {}, 'Nenhuma chegada registrada hoje ainda.'), el('p', { class: 'suave' }, 'Quando um paciente chegar, toque em "Registrar chegada".')) : null,
       colunaPets('col-aguardando', 'Aguardando', dados.aguardando, 'Ninguém aguardando no momento.'),
       colunaPets('col-atendimento', 'Em atendimento', dados.em_atendimento, 'Nenhum atendimento em andamento.'),
-      el('aside', { class: 'col-lateral', 'aria-label': 'Receitas e finalizados' }, ...secoesReceitas(), finais),
+      el('aside', { class: 'col-lateral', 'aria-label': 'Pagamentos, receitas e finalizados' }, secaoPagamento(), ...secoesReceitas(), finais),
       dados.cancelados_hoje ? el('p', { class: 'suave' }, `Chegadas canceladas hoje: ${dados.cancelados_hoje}`) : null,
     ].filter(Boolean)); // (replaceChildren transformaria null em o texto "null")
   }
@@ -1306,10 +1353,12 @@ function cabecalho() {
   return el('header', { class: 'topo-app' }, el('div', { class: 'topo-dentro' },
     el('a', { class: 'marca', href: '#/hoje', 'aria-label': 'Vetclin — tela Hoje' }, el('img', { class: 'logo', src: '/logo-vetclin.png', alt: 'Vetclin Clínica Veterinária', width: 122, height: 38 })),
     usuario ? el('nav', { class: 'nav-principal', 'aria-label': 'Principal' },
-      atalho('Hoje', '#/hoje', /^#\/(hoje|chegada|atendimento)/.test(h) || h === '#/'),
+      atalho('Hoje', '#/hoje', /^#\/(hoje|chegada|atendimento|conta)/.test(h) || h === '#/'),
       atalho('Pacientes', '#/busca', /^#\/(busca|pet|tutor)/.test(h)),
       atalho('Receitas', '#/receitas/imprimir', /^#\/receita/.test(h)),
+      atalho('Preços', '#/precos', h.startsWith('#/precos')),
       atalho('Notificações', '#/notificacoes', h.startsWith('#/notificacoes')),
+      usuario.admin ? atalho('Caixa', '#/caixa', h.startsWith('#/caixa')) : null,
       usuario.admin ? atalho('Usuários', '#/usuarios', h.startsWith('#/usuarios')) : null) : null,
     usuario ? el('div', { class: 'topo-direita' },
       el('span', { class: 'chip-usuario', title: usuario.nome },
@@ -2564,6 +2613,450 @@ function secaoDadosClinica() {
 }
 
 
+// ---------- Conta do atendimento (itens e pagamento) ----------
+const PODE_CANCELAR_CONTA = ['veterinario', 'suporte']; // (administradores também podem)
+
+// Janela para receber um pagamento: forma (3 botões grandes), valor, dinheiro recebido/troco e foto do comprovante.
+// "aoConfirmar(corpo)" chama a API; se lançar erro, a mensagem aparece na janela. Devolve true se registrou.
+function dialogoPagamento({ restante, pet }) {
+  return new Promise((resolve) => {
+    let forma = '';
+    const area = el('div');
+    const valorEntrada = el('input', { id: 'pag-valor', type: 'text', inputmode: 'decimal', autocomplete: 'off', value: reaisParaCampo(restante), class: 'campo-valor' });
+    const recebidoEntrada = el('input', { id: 'pag-recebido', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'ex.: 100,00', class: 'campo-valor' });
+    const troco = el('p', { class: 'troco', id: 'pag-troco', role: 'status' });
+    const blocoDinheiro = el('div', { class: 'bloco-dinheiro', hidden: true }, el('label', { for: 'pag-recebido' }, 'Recebido do cliente (R$)'), recebidoEntrada, troco);
+    const foto = campoFoto(null, 'comprovante', 'Foto do comprovante (opcional)');
+    const botoesForma = Object.entries(ROTULO_FORMA).map(([chave, rotulo]) => {
+      const b = el('button', { type: 'button', class: 'opcao forma-opcao', role: 'radio', 'aria-checked': 'false', 'data-valor': chave }, rotulo);
+      b.addEventListener('click', () => {
+        forma = chave;
+        for (const x of botoesForma) x.setAttribute('aria-checked', String(x === b));
+        blocoDinheiro.hidden = forma !== 'dinheiro';
+        atualizarTroco();
+      });
+      return b;
+    });
+    function atualizarTroco() {
+      const valor = lerReais(valorEntrada.value);
+      const recebido = lerReais(recebidoEntrada.value);
+      troco.className = 'troco';
+      if (forma !== 'dinheiro' || recebido === null || valor === null) { troco.textContent = ''; return; }
+      const t = trocoDe(valor, recebido);
+      if (t === null) { troco.textContent = `Faltam ${formatarReais(valor - recebido)} do cliente`; troco.classList.add('falta'); } else troco.textContent = `Troco: ${formatarReais(t)}`;
+    }
+    valorEntrada.addEventListener('input', atualizarTroco);
+    recebidoEntrada.addEventListener('input', atualizarTroco);
+    const ok = el('button', { type: 'button', id: 'pag-confirmar' }, 'Confirmar recebimento');
+    const d = el('dialog', { class: 'confirmacao dialogo-rolagem' },
+      el('h2', {}, 'Receber pagamento'),
+      el('p', { class: 'suave' }, `${pet} · falta receber `, el('strong', {}, formatarReais(restante))),
+      el('label', {}, 'Forma de pagamento'),
+      el('div', { class: 'grupo-opcoes', role: 'radiogroup', 'aria-label': 'Forma de pagamento' }, botoesForma),
+      el('label', { for: 'pag-valor' }, 'Valor deste pagamento (R$)'), valorEntrada,
+      blocoDinheiro, foto.caixa, area,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'pag-voltar' }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    ok.addEventListener('click', async () => {
+      area.replaceChildren();
+      ok.disabled = true;
+      try {
+        if (!forma) throw new Error('Escolha a forma de pagamento: Pix, Cartão ou Dinheiro.');
+        const valor = lerReais(valorEntrada.value);
+        if (valor === null || valor <= 0) throw new Error('Informe o valor recebido. Exemplo: 50,00');
+        if (valor > restante) throw new Error(`O valor é maior que o que falta pagar (${formatarReais(restante)}).`);
+        const corpo = { forma, valor_centavos: valor };
+        if (forma === 'dinheiro' && recebidoEntrada.value.trim()) {
+          const recebido = lerReais(recebidoEntrada.value);
+          if (recebido === null) throw new Error('Valor recebido do cliente inválido. Exemplo: 100,00');
+          if (recebido < valor) throw new Error('O dinheiro recebido é menor que o valor a pagar.');
+          corpo.recebido_dinheiro_centavos = recebido;
+        }
+        const fotoId = await foto.resolver();
+        if (fotoId) corpo.comprovante_foto_id = fotoId;
+        fechar(corpo);
+      } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    d.querySelector('#pag-voltar').addEventListener('click', () => fechar(null));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(null); });
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+// Janela "Adicionar item": busca no catálogo (com chips de categoria) ou item livre.
+// "aoAdicionar(item)" é chamado a cada item; a janela continua aberta até tocar em "Concluir".
+function dialogoAdicionarItem(aoAdicionar) {
+  return new Promise((resolve) => {
+    let categoria = '';
+    let tempo = null;
+    const aviso = el('div', { 'aria-live': 'polite' });
+    const resultados = el('div', { class: 'lista-catalogo' });
+    const busca = el('input', { id: 'item-busca', type: 'search', class: 'busca-grande', placeholder: 'Buscar no catálogo', autocomplete: 'off' });
+    const chips = ['', ...Object.keys(ROTULO_CATEGORIA)].map((c) => {
+      const b = el('button', { type: 'button', class: 'chip-filtro', 'aria-pressed': String(c === categoria), 'data-categoria': c }, c ? ROTULO_CATEGORIA[c] : 'Todos');
+      b.addEventListener('click', () => { categoria = c; for (const x of chips) x.setAttribute('aria-pressed', String(x === b)); carregar(); });
+      return b;
+    });
+    async function adicionar(item, descricao) {
+      aviso.replaceChildren();
+      try { await aoAdicionar(item); aviso.replaceChildren(caixaMensagem('ok', `Adicionado: ${descricao}`)); } catch (e) { aviso.replaceChildren(caixaMensagem('erro', e.message)); }
+    }
+    async function carregar() {
+      try {
+        const qs = new URLSearchParams({ q: busca.value.trim(), categoria });
+        const { itens } = await api('GET', '/api/catalogo?' + qs);
+        resultados.replaceChildren(...(itens.length
+          ? itens.map((c) => el('button', { type: 'button', class: 'secundario item-catalogo', onclick: () => adicionar({ catalogo_id: c.id, descricao: c.nome, quantidade: 1, preco_unitario_centavos: c.preco_centavos, origem: 'manual' }, c.nome) },
+            el('span', { class: 'item-catalogo-nome' }, c.nome), el('strong', {}, formatarReais(c.preco_centavos))))
+          : [el('p', { class: 'suave' }, 'Nada encontrado. Use "Item livre" abaixo ou cadastre em Preços.')]));
+      } catch (e) { resultados.replaceChildren(caixaMensagem('erro', e.message)); }
+    }
+    busca.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(carregar, 250); });
+    // Item livre
+    const livreDescricao = el('input', { id: 'livre-descricao', type: 'text', maxlength: 200, autocomplete: 'off', placeholder: 'ex.: Taxa de urgência' });
+    const livreValor = el('input', { id: 'livre-valor', type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: 'ex.: 30,00' });
+    const livreQtd = el('input', { id: 'livre-qtd', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: '1' });
+    const livreOk = el('button', { type: 'button', id: 'livre-adicionar' }, 'Adicionar item livre');
+    livreOk.addEventListener('click', async () => {
+      const descricao = livreDescricao.value.trim();
+      const valor = lerReais(livreValor.value);
+      const qtd = /^\d{1,3}$/.test(livreQtd.value.trim()) ? Number(livreQtd.value.trim()) : 0;
+      if (!descricao) { aviso.replaceChildren(caixaMensagem('erro', 'Escreva o nome do item.')); return; }
+      if (valor === null || valor > MAX_VALOR_CENTAVOS) { aviso.replaceChildren(caixaMensagem('erro', 'Informe o valor do item. Exemplo: 30,00')); return; }
+      if (qtd < 1) { aviso.replaceChildren(caixaMensagem('erro', 'A quantidade deve ser de 1 a 999.')); return; }
+      await adicionar({ descricao, quantidade: qtd, preco_unitario_centavos: valor, catalogo_id: null, origem: 'manual' }, descricao);
+      livreDescricao.value = ''; livreValor.value = ''; livreQtd.value = '1';
+    });
+    const d = el('dialog', { class: 'confirmacao dialogo-rolagem dialogo-largo' },
+      el('h2', {}, 'Adicionar item'),
+      busca, el('div', { class: 'chips-filtro', role: 'group', 'aria-label': 'Categoria' }, chips),
+      resultados, aviso,
+      el('details', { class: 'item-livre' },
+        el('summary', {}, 'Item livre (fora do catálogo)'),
+        el('label', { for: 'livre-descricao' }, 'Nome do item'), livreDescricao,
+        el('div', { class: 'linha-dupla' },
+          el('div', {}, el('label', { for: 'livre-valor' }, 'Valor (R$)'), livreValor),
+          el('div', {}, el('label', { for: 'livre-qtd' }, 'Quantidade'), livreQtd)),
+        livreOk),
+      el('div', { class: 'acoes' }, el('button', { type: 'button', id: 'item-concluir' }, 'Concluir')));
+    const fechar = () => { clearTimeout(tempo); d.close(); d.remove(); resolve(); };
+    d.querySelector('#item-concluir').addEventListener('click', fechar);
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+    document.body.append(d);
+    d.showModal();
+    carregar();
+  });
+}
+
+async function telaConta(atendimentoId, consulta = '') {
+  const minha = versaoTela;
+  let abrirRecebimento = new URLSearchParams(consulta).get('receber') === '1';
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('p', { class: 'carregando' }, 'Carregando…'));
+  let d;
+  let itens = [];
+  let trocoAviso = null; // "Troco: R$ 50,00" logo depois de receber em dinheiro
+  const erro = el('div');
+  const corpo = el('div', { class: 'conta-corpo' });
+  const copia = (lista) => lista.map((i) => ({ ...i }));
+  const aplicar = (r) => { d = r; itens = copia(r.pedido.itens); };
+  const paraEnvio = (lista) => lista.map(({ descricao, quantidade, preco_unitario_centavos, catalogo_id, origem }) => ({ descricao, quantidade, preco_unitario_centavos, catalogo_id, origem }));
+
+  async function salvar(lista) {
+    aplicar(await api('PUT', `/api/atendimentos/${atendimentoId}/pedido/itens`, { itens: paraEnvio(lista) }));
+    desenhar();
+  }
+  // Roda uma ação; se falhar, mostra o erro e recarrega a conta (para a tela refletir o que de fato está gravado).
+  async function agir(funcao) {
+    erro.replaceChildren();
+    try { await funcao(); } catch (e) {
+      if (minha !== versaoTela) return;
+      if (e.status === 401) { usuario = null; telaEntrar(); return; }
+      erro.replaceChildren(caixaMensagem('erro', e.message));
+      try { aplicar(await api('GET', `/api/atendimentos/${atendimentoId}/pedido`)); desenhar(); } catch { /* mantém o que está na tela */ }
+    }
+  }
+  // O rascunho calculado só vira conta de verdade ao salvar.
+  async function garantirSalva() { if (d.pedido.rascunho) await salvar(itens); return d.pedido.id; }
+
+  async function receber() {
+    await agir(async () => {
+      const id = await garantirSalva();
+      const pagamento = await dialogoPagamento({ restante: d.pedido.restante_centavos, pet: d.atendimento.pet.nome });
+      if (!pagamento) return;
+      const r = await api('POST', `/api/pedidos/${id}/pagamentos`, pagamento);
+      trocoAviso = r.troco_centavos > 0 ? `Troco: ${formatarReais(r.troco_centavos)}` : null;
+      aplicar(r);
+      desenhar();
+    });
+  }
+
+  function linhaItem(i, editavel) {
+    const trocarQtd = (nova) => agir(() => salvar(itens.map((x) => (x === i ? { ...x, quantidade: nova } : x))));
+    const editarPreco = () => dialogoCampo({
+      titulo: `Valor de ${i.descricao}`, texto: 'Valor de cada unidade.', rotulo: 'Valor (R$)', rotuloOk: 'Salvar valor', inicial: reaisParaCampo(i.preco_unitario_centavos),
+      aoConfirmar: async (v) => {
+        const c = lerReais(v);
+        if (c === null || c > MAX_VALOR_CENTAVOS) throw new Error('Informe o valor. Exemplo: 45,00');
+        await salvar(itens.map((x) => (x === i ? { ...x, preco_unitario_centavos: c } : x)));
+      },
+    });
+    return el('li', { class: 'conta-item' },
+      el('div', { class: 'conta-item-topo' },
+        el('strong', { class: 'conta-item-nome' }, i.descricao, i.origem === 'receita' ? el('span', { class: 'etiqueta' }, 'Receita') : null),
+        el('strong', { class: 'subtotal' }, formatarReais(i.quantidade * i.preco_unitario_centavos))),
+      i.origem === 'consulta' && d.automaticos.consulta ? el('p', { class: 'conta-explicacao' }, d.automaticos.consulta.explicacao) : null,
+      el('div', { class: 'conta-item-linha' },
+        editavel
+          ? el('div', { class: 'passos' },
+            el('button', { type: 'button', class: 'secundario passo', 'aria-label': 'Diminuir quantidade', disabled: i.quantidade <= 1, onclick: () => trocarQtd(i.quantidade - 1) }, '−'),
+            el('span', { class: 'qtd', 'aria-label': `Quantidade ${i.quantidade}` }, String(i.quantidade)),
+            el('button', { type: 'button', class: 'secundario passo', 'aria-label': 'Aumentar quantidade', disabled: i.quantidade >= 999, onclick: () => trocarQtd(i.quantidade + 1) }, '+'))
+          : el('span', { class: 'qtd' }, `${i.quantidade} ×`),
+        editavel
+          ? el('button', { type: 'button', class: 'secundario preco-item', 'aria-label': `Alterar valor de ${i.descricao}`, onclick: editarPreco }, formatarReais(i.preco_unitario_centavos))
+          : el('span', { class: 'preco-item-fixo' }, formatarReais(i.preco_unitario_centavos)),
+        editavel ? el('button', { type: 'button', class: 'secundario remover-item', 'aria-label': `Remover ${i.descricao}`, onclick: () => agir(() => salvar(itens.filter((x) => x !== i))) }, icone('fechar', 18, 2.4)) : null));
+  }
+
+  function listaPagamentos(p) {
+    if (!p.pagamentos.length) return null;
+    return el('div', { class: 'cartao conta-pagamentos' }, el('h2', {}, 'Pagamentos'),
+      el('ul', { class: 'lista-simples' }, p.pagamentos.map((g) => el('li', { class: 'pagamento-linha' + (g.estornado ? ' estornado' : '') },
+        el('div', { class: 'pagamento-info' },
+          el('strong', {}, `${ROTULO_FORMA[g.forma] || g.forma} · ${formatarReais(g.valor_centavos)}`, g.estornado ? el('span', { class: 'etiqueta st-cancelada' }, 'Desfeito') : null),
+          el('span', { class: 'detalhe' }, `Recebido por ${g.recebido_por.nome} em ${formatarDataHora(g.recebido_em)}`),
+          g.forma === 'dinheiro' && g.recebido_dinheiro_centavos != null ? el('span', { class: 'detalhe' }, `Cliente deu ${formatarReais(g.recebido_dinheiro_centavos)} · troco ${formatarReais(g.troco_centavos)}`) : null,
+          g.comprovante_foto_id ? el('a', { class: 'detalhe', href: `/api/fotos/${g.comprovante_foto_id}`, target: '_blank', rel: 'noopener' }, 'Ver foto do comprovante') : null,
+          g.estornado ? el('span', { class: 'detalhe estorno-motivo' }, `Desfeito por ${g.estornado_por ? g.estornado_por.nome : '—'}: ${g.estorno_motivo || ''}`) : null),
+        !g.estornado && usuario.admin
+          ? el('button', { type: 'button', class: 'perigo desfazer-pagamento', onclick: () => dialogoCampo({
+            titulo: 'Desfazer este pagamento?', texto: `${ROTULO_FORMA[g.forma]} de ${formatarReais(g.valor_centavos)}. Só administradores podem fazer isso. Conte o motivo:`,
+            rotulo: 'Motivo', rotuloOk: 'Sim, desfazer pagamento',
+            aoConfirmar: async (m) => {
+              if (!m.trim()) throw new Error('Preencha o motivo.');
+              trocoAviso = null;
+              aplicar(await api('POST', `/api/pagamentos/${g.id}/estornar`, { motivo: m.trim() }));
+              desenhar();
+            },
+          }) }, 'Desfazer')
+          : null))));
+  }
+
+  function desenhar() {
+    if (minha !== versaoTela) return;
+    const p = d.pedido;
+    const at = d.atendimento;
+    const editavel = p.pode_editar;
+    const e = estadoDaConta(p);
+    const vet = PODE_ATENDER.includes(usuario.papel);
+    const cartaoPaciente = el('div', { class: 'cartao cartao-paciente conta-paciente' },
+      miniatura(at.pet.foto_id, at.pet.nome),
+      el('div', { class: 'info' }, el('strong', {}, at.pet.nome), el('span', {}, `Tutor: ${at.tutor.nome}`),
+        el('span', {}, `Atendimento: ${ROTULO_STATUS[at.status] || at.status}${at.veterinario_nome ? ' · ' + comTratamento(at.veterinario_nome) : ''}`)),
+      el('span', { class: 'pilula-conta ' + e.tipo }, p.rascunho ? 'conta nova' : e.texto));
+
+    const pagoUltimo = [...p.pagamentos].reverse().find((g) => !g.estornado);
+    const sucesso = p.status === 'pago'
+      ? el('div', { class: 'cartao conta-sucesso', role: 'status' },
+        el('div', { class: 'sucesso-titulo' }, icone('check', 28, 3), 'Pago ✓'),
+        pagoUltimo ? el('p', {}, `Recebido por ${pagoUltimo.recebido_por.nome} em ${formatarDataHora(p.pago_em || pagoUltimo.recebido_em)}`) : null,
+        trocoAviso ? el('p', { class: 'troco-grande' }, trocoAviso) : null)
+      : (trocoAviso ? caixaMensagem('ok', trocoAviso) : null);
+
+    const semValor = d.automaticos.sem_valor;
+    const avisos = editavel && semValor.length
+      ? el('div', { class: 'aviso-peso aviso-sem-valor', role: 'alert' },
+        el('strong', {}, 'Produto sem valor na receita (não entrou na conta):'),
+        el('ul', {}, semValor.map((x) => el('li', {}, `${x.descricao}${x.quantidade > 1 ? ' (' + x.quantidade + ')' : ''}`))),
+        el('span', { class: 'suave' }, 'Coloque o valor na receita ou adicione o item abaixo.'))
+      : null;
+
+    const botoes = [];
+    if (editavel) {
+      const comPagamento = p.pagamentos.some((g) => !g.estornado);
+      botoes.push(el('button', { type: 'button', class: 'secundario bloco-botao', id: 'adicionar-item', onclick: async () => { await dialogoAdicionarItem((item) => salvar([...itens, item])); } }, icone('mais', 20, 2.6), 'Adicionar item'));
+      if (receitaDesatualizada(itens, d.automaticos)) {
+        botoes.push(el('button', { type: 'button', class: 'secundario bloco-botao', id: 'atualizar-receita', onclick: () => agir(() => salvar(atualizarDaReceita(itens, d.automaticos))) }, 'Atualizar da receita'));
+      }
+      const vazio = p.total_centavos <= 0;
+      if (p.status === 'aberto' && vet) {
+        botoes.push(el('button', { type: 'button', class: 'grande', id: 'enviar-recepcao', disabled: vazio, onclick: () => agir(async () => {
+          const id = await garantirSalva();
+          await api('POST', `/api/pedidos/${id}/enviar-recepcao`);
+          irPara('#/hoje');
+        }) }, 'Enviar para a recepção'));
+        botoes.push(el('button', { type: 'button', class: 'secundario bloco-botao', id: 'cobrar-aqui', disabled: vazio, onclick: receber }, 'Cobrar aqui'));
+      } else {
+        botoes.push(el('button', { type: 'button', class: 'grande', id: 'receber', disabled: vazio, onclick: receber },
+          p.pago_centavos > 0 ? `Receber o restante (${formatarReais(p.restante_centavos)})` : (p.status === 'aberto' ? 'Receber pagamento' : `Receber ${formatarReais(p.restante_centavos)}`)));
+      }
+      if (!p.rascunho && !comPagamento && (vet || usuario.admin)) {
+        botoes.push(el('button', { type: 'button', class: 'perigo bloco-botao', id: 'cancelar-conta', onclick: async () => {
+          const feito = await dialogoCampo({
+            titulo: 'Cancelar esta conta?', texto: 'A conta some da lista de pagamentos. Conte o motivo:', rotulo: 'Motivo do cancelamento', rotuloOk: 'Sim, cancelar conta',
+            aoConfirmar: async (m) => {
+              if (!m.trim()) throw new Error('Preencha o motivo do cancelamento.');
+              await api('POST', `/api/pedidos/${p.id}/cancelar`, { motivo: m.trim() });
+            },
+          });
+          if (feito) irPara('#/hoje');
+        } }, 'Cancelar conta'));
+      }
+    }
+
+    corpo.replaceChildren(...[
+      cartaoPaciente, sucesso,
+      el('div', { class: 'cartao' },
+        el('h2', {}, 'Itens da conta'),
+        itens.length ? el('ul', { class: 'conta-itens' }, itens.map((i) => linhaItem(i, editavel))) : el('p', { class: 'suave' }, 'Nenhum item ainda. Toque em "Adicionar item".'),
+        avisos,
+        el('div', { class: 'conta-total' },
+          el('span', {}, 'Total'),
+          el('strong', { class: 'total-valor', id: 'conta-total' }, formatarReais(p.total_centavos))),
+        p.pago_centavos > 0 && p.status !== 'pago'
+          ? el('p', { class: 'conta-parcial-linha' }, `Já pago ${formatarReais(p.pago_centavos)} · falta `, el('strong', {}, formatarReais(p.restante_centavos)))
+          : null),
+      el('div', { class: 'conta-botoes' }, botoes),
+      listaPagamentos(p),
+      p.status === 'pago' ? el('button', { type: 'button', class: 'secundario bloco', onclick: () => irPara('#/hoje') }, 'Voltar para Hoje') : null,
+    ].filter(Boolean));
+
+    if (abrirRecebimento && editavel) { abrirRecebimento = false; receber(); }
+  }
+
+  try {
+    aplicar(await api('GET', `/api/atendimentos/${atendimentoId}/pedido`));
+  } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Conta'), erro, corpo);
+  desenhar();
+}
+
+// ---------- Preços (catálogo) ----------
+const ORDEM_CATEGORIAS = ['consulta', 'exame', 'vacina', 'procedimento', 'produto', 'outro'];
+
+// Janela para criar ou editar um item do catálogo. "item" = null para um novo.
+function dialogoItemCatalogo(item, aoSalvar) {
+  return new Promise((resolve) => {
+    const area = el('div');
+    const nome = el('input', { id: 'cat-nome', type: 'text', maxlength: 120, autocomplete: 'off', value: item ? item.nome : '', placeholder: 'ex.: Vacina V10' });
+    const preco = el('input', { id: 'cat-preco', type: 'text', inputmode: 'decimal', autocomplete: 'off', value: item ? reaisParaCampo(item.preco_centavos) : '', placeholder: 'ex.: 90,00' });
+    const cat = el('select', { id: 'cat-categoria' }, ORDEM_CATEGORIAS.map((c) => el('option', { value: c }, ROTULO_CATEGORIA[c])));
+    cat.value = item ? item.categoria : 'produto';
+    if (item && item.categoria === 'consulta') cat.disabled = true; // as consultas são usadas pela regra do horário
+    const ok = el('button', { type: 'button', id: 'cat-salvar' }, item ? 'Salvar' : 'Criar item');
+    const d = el('dialog', { class: 'confirmacao dialogo-rolagem' },
+      el('h2', {}, item ? 'Editar item' : 'Novo item'),
+      el('label', { for: 'cat-nome' }, 'Nome'), nome,
+      el('label', { for: 'cat-categoria' }, 'Categoria'), cat,
+      el('label', { for: 'cat-preco' }, 'Preço (R$)'), preco, area,
+      el('div', { class: 'acoes' }, ok, el('button', { type: 'button', class: 'secundario', id: 'cat-voltar' }, 'Voltar')));
+    const fechar = (v) => { d.close(); d.remove(); resolve(v); };
+    ok.addEventListener('click', async () => {
+      area.replaceChildren();
+      ok.disabled = true;
+      try {
+        const centavos = lerReais(preco.value);
+        if (!nome.value.trim()) throw new Error('Escreva o nome do item.');
+        if (centavos === null || centavos > MAX_VALOR_CENTAVOS) throw new Error('Informe o preço. Exemplo: 90,00');
+        await aoSalvar({ nome: nome.value.trim(), categoria: cat.value, preco_centavos: centavos });
+        fechar(true);
+      } catch (e) { area.replaceChildren(caixaMensagem('erro', e.message)); ok.disabled = false; }
+    });
+    d.querySelector('#cat-voltar').addEventListener('click', () => fechar(false));
+    d.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(false); });
+    document.body.append(d);
+    d.showModal();
+    nome.focus();
+  });
+}
+
+async function telaPrecos() {
+  const minha = versaoTela;
+  let categoria = '';
+  let comInativos = false;
+  let tempo = null;
+  const lista = el('div', { class: 'carregando' }, 'Carregando…');
+  const avisos = el('div');
+  const busca = el('input', { id: 'preco-busca', type: 'search', class: 'busca-grande', placeholder: 'Buscar item (ex.: vacina)', autocomplete: 'off' });
+  const chips = ['', ...ORDEM_CATEGORIAS].map((c) => {
+    const b = el('button', { type: 'button', class: 'chip-filtro', 'aria-pressed': String(c === categoria), 'data-categoria': c }, c ? ROTULO_CATEGORIA[c] : 'Todos');
+    b.addEventListener('click', () => { categoria = c; for (const x of chips) x.setAttribute('aria-pressed', String(x === b)); carregar(); });
+    return b;
+  });
+  const inativos = el('input', { type: 'checkbox', id: 'preco-inativos' });
+  inativos.addEventListener('change', () => { comInativos = inativos.checked; carregar(); });
+
+  async function carregar() {
+    if (minha !== versaoTela) return;
+    try {
+      const qs = new URLSearchParams({ q: busca.value.trim(), categoria, inativos: comInativos ? '1' : '' });
+      const { itens } = await api('GET', '/api/catalogo?' + qs);
+      if (minha !== versaoTela) return;
+      desenhar(itens);
+    } catch (e) { if (minha === versaoTela) { lista.className = ''; lista.replaceChildren(caixaMensagem('erro', e.message)); } }
+  }
+  function linha(c) {
+    return el('div', { class: 'preco-linha' + (c.ativo ? '' : ' inativo') },
+      el('div', { class: 'preco-info' },
+        el('strong', {}, c.nome, c.ativo ? null : el('span', { class: 'etiqueta inativo' }, 'Desativado')),
+        c.categoria === 'consulta' ? el('span', { class: 'detalhe' }, 'Usado na conta pelo horário da consulta') : null),
+      el('strong', { class: 'preco-valor' }, formatarReais(c.preco_centavos)),
+      el('div', { class: 'preco-botoes' },
+        el('button', { type: 'button', class: 'secundario editar-preco', onclick: async () => {
+          if (await dialogoItemCatalogo(c, (v) => api('PATCH', `/api/catalogo/${c.id}`, v))) carregar();
+        } }, 'Editar'),
+        c.categoria === 'consulta' ? null : el('button', { type: 'button', class: 'secundario', onclick: async () => {
+          avisos.replaceChildren();
+          try { await api('PATCH', `/api/catalogo/${c.id}`, { ativo: !c.ativo }); carregar(); } catch (e) { avisos.replaceChildren(caixaMensagem('erro', e.message)); }
+        } }, c.ativo ? 'Desativar' : 'Ativar')));
+  }
+  function desenhar(itens) {
+    lista.className = 'lista-precos';
+    if (!itens.length) { lista.replaceChildren(el('p', { class: 'suave' }, 'Nenhum item encontrado.')); return; }
+    lista.replaceChildren(...ORDEM_CATEGORIAS.filter((c) => itens.some((i) => i.categoria === c)).map((c) =>
+      el('section', { class: 'cartao grupo-preco', 'aria-label': ROTULO_CATEGORIA[c] },
+        el('h2', {}, ROTULO_CATEGORIA[c]),
+        itens.filter((i) => i.categoria === c).map(linha))));
+  }
+  busca.addEventListener('input', () => { clearTimeout(tempo); tempo = setTimeout(carregar, 250); });
+
+  mostrar(cabecalho(), botaoVoltar('#/hoje'),
+    el('div', { class: 'precos-topo' },
+      el('h1', {}, 'Preços'),
+      el('button', { type: 'button', class: 'grande', id: 'novo-item', onclick: async () => {
+        if (await dialogoItemCatalogo(null, (v) => api('POST', '/api/catalogo', v))) carregar();
+      } }, icone('mais', 22, 2.6), 'Novo item')),
+    busca, el('div', { class: 'chips-filtro', role: 'group', 'aria-label': 'Categoria' }, chips),
+    el('label', { class: 'linha', for: 'preco-inativos' }, inativos, 'Mostrar itens desativados'),
+    avisos, lista);
+  carregar();
+}
+
+// ---------- Caixa de hoje (só administrador) ----------
+async function telaCaixa() {
+  const minha = versaoTela;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Caixa de hoje'), el('p', { class: 'carregando' }, 'Carregando…'));
+  let c;
+  try { c = await api('GET', '/api/caixa/hoje'); } catch (e) { if (minha === versaoTela) telaErro(e); return; }
+  if (minha !== versaoTela) return;
+  mostrar(cabecalho(), botaoVoltar('#/hoje'), el('h1', {}, 'Caixa de hoje'),
+    el('p', { class: 'hoje-data' }, dataDeHoje()),
+    el('div', { class: 'caixa-total cartao' }, el('span', {}, 'Total recebido hoje'), el('strong', { id: 'caixa-total' }, formatarReais(c.total_centavos)),
+      el('span', { class: 'suave' }, `${c.quantidade} ${c.quantidade === 1 ? 'pagamento' : 'pagamentos'}`)),
+    el('div', { class: 'caixa-formas' }, Object.entries(ROTULO_FORMA).map(([f, rotulo]) => el('div', { class: 'cartao caixa-forma', 'data-forma': f },
+      el('span', { class: 'caixa-forma-nome' }, rotulo), el('strong', {}, formatarReais(c.por_forma[f].total_centavos)),
+      el('span', { class: 'suave' }, `${c.por_forma[f].quantidade} ${c.por_forma[f].quantidade === 1 ? 'pagamento' : 'pagamentos'}`)))),
+    c.estornados_hoje.quantidade ? el('p', { class: 'suave' }, `Pagamentos desfeitos hoje (não contados): ${c.estornados_hoje.quantidade} · ${formatarReais(c.estornados_hoje.total_centavos)}`) : null,
+    el('div', { class: 'cartao' }, el('h2', {}, 'Pagamentos de hoje'),
+      c.pagamentos.length
+        ? el('ul', { class: 'lista-simples' }, c.pagamentos.map((g) => el('li', { class: 'pagamento-linha' },
+          el('div', { class: 'pagamento-info' }, el('strong', {}, `${g.pet} · ${formatarReais(g.valor_centavos)}`),
+            el('span', { class: 'detalhe' }, `${ROTULO_FORMA[g.forma]} · ${formatarHora(g.recebido_em)} · recebido por ${g.recebido_por} · tutor ${g.tutor}`)))))
+        : el('p', { class: 'suave' }, 'Nenhum pagamento recebido hoje ainda.')));
+}
+
 // ---------- roteador ----------
 // Tela "Notificações": ativar, testar ou desativar neste aparelho.
 async function telaNotificacoes() {
@@ -2594,6 +3087,9 @@ function rotear() {
   if (rota === 'receitas' && partes[1] === 'imprimir') return telaReceitasImprimir();
   if (rota === 'receitas' && partes[1] === 'transcrever') return telaTranscrever(consulta);
   if (rota === 'cadastro') return irPara('#/chegada/nova'); // endereço antigo do cadastro rápido
+  if (rota === 'conta' && n) return telaConta(n, consulta);
+  if (rota === 'precos') return telaPrecos();
+  if (rota === 'caixa') return usuario.admin ? telaCaixa() : telaHoje();
   if (rota === 'notificacoes') return telaNotificacoes();
   if (rota === 'usuarios') return usuario.admin ? telaUsuarios() : telaHoje();
   if (rota === 'pet' && n) return acao === 'editar' ? telaEditarPet(n) : telaPet(n);
